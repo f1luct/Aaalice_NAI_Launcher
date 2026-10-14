@@ -6833,6 +6833,18 @@ abstract class AppLocalizations {
   /// **'Right-click to add to the blacklist or output filter'**
   String get onlineGallery_tagContextMenuTooltip;
 
+  /// Tooltip for an output-filtered tag chip on touch devices; mirrors onlineGallery_outputFilteredTagTooltip.
+  ///
+  /// In en, this message translates to:
+  /// **'Removed when copying, sending, or adding to queue; long-press to manage'**
+  String get onlineGallery_outputFilteredTagTooltipTouch;
+
+  /// Tooltip for a tag chip on touch devices, where there is no right-click; mirrors onlineGallery_tagContextMenuTooltip.
+  ///
+  /// In en, this message translates to:
+  /// **'Long-press to add to the blacklist or output filter'**
+  String get onlineGallery_tagContextMenuTooltipTouch;
+
   /// No description provided for @onlineGallery_outputFilterTagAdded.
   ///
   /// In en, this message translates to:
@@ -27825,18 +27837,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Quick tools'**
   String get generation_quickTools;
-
-  /// Tooltip for an output-filtered tag chip on touch devices; mirrors onlineGallery_outputFilteredTagTooltip.
-  ///
-  /// In en, this message translates to:
-  /// **'Removed when copying, sending, or adding to queue; long-press to manage'**
-  String get onlineGallery_outputFilteredTagTooltipTouch;
-
-  /// Tooltip for a tag chip on touch devices, where there is no right-click; mirrors onlineGallery_tagContextMenuTooltip.
-  ///
-  /// In en, this message translates to:
-  /// **'Long-press to add to the blacklist or output filter'**
-  String get onlineGallery_tagContextMenuTooltipTouch;
 
   /// Toast shown when the user denied the add-only photo library permission.
   ///

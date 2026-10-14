@@ -537,10 +537,8 @@ class _PanelIconButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final interactionPolicy = context.interactionPolicy;
     final baseExtent = comfortable ? 40.0 : 23.0;
-    // 偏离上游：上游写死 comfortable ? 40 : 23。紧凑态的 23pt 远低于 44pt 的
-    // 触摸下限（上游自己在角色卡片头部已经修到 44），而紧凑态正是手机上
-    // 参数面板里角色行走的分支。只在本会话观察到触屏时抬到
-    // minimumControlExtent，指针环境保持上游密度不变。
+    // 紧凑态的 23pt 远低于 44pt 的触摸下限，而手机参数面板里的角色行走的正是
+    // 紧凑态。观察到触屏时抬到 minimumControlExtent，指针环境保持原有密度。
     final extent = interactionPolicy.touchAvailable
         ? math.max(baseExtent, interactionPolicy.minimumControlExtent)
         : baseExtent;
@@ -585,9 +583,8 @@ class _AddCharacterChip extends ConsumerWidget {
         message: message,
         child: Opacity(
           opacity: 0.4,
-          // 偏离上游：上游是 IgnorePointer，理由只能从 tooltip 看到。触屏没有
-          // hover，要长按 500ms 才会弹 tooltip，实际表现就是"点了没反应"。
-          // 保留禁用语义（不添加角色），但点击必须给出同一句话的可见反馈。
+          // 禁用原因原本只在 tooltip 里，触屏没有 hover，要长按才看得到，表现
+          // 为点了没反应。仍然不添加角色，但点击时用同一句话给出可见反馈。
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: () => AppToast.warning(context, message),

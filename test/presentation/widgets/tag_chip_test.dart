@@ -4,8 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nai_launcher/presentation/widgets/tag_chip.dart';
 
-/// SimpleTagChip 的上下文菜单在上游只有 onSecondaryTapUp（右键），
-/// 触屏上没有右键，这里锁住长按这条等价入口。
+/// 触屏上没有右键，SimpleTagChip 的上下文菜单要能通过长按打开。
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 

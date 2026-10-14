@@ -5,6 +5,7 @@ import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:crypto/crypto.dart';
 import 'package:csv/csv.dart';
 import 'package:ffi/ffi.dart';
@@ -107,10 +108,9 @@ class LocalOnnxTaggerService {
 
   /// 单次推理允许使用的 intra-op 线程数。
   ///
-  /// 【偏离上游】上游无条件 `setIntraOpNumThreads(1)`。桌面端单线程够用，
-  /// 但手机 CPU 单核性能远低于桌面，写死 1 会让本地反推耗时翻倍。
-  /// 移动端放开到 `min(4, CPU 核数)`：既吃满大核，又不至于在小核上抢占调度
-  /// （推理本身已在独立 isolate 里串行跑，见 [tagImage] 的 ComputeGate）。
+  /// 桌面端保持单线程；手机单核性能远低于桌面，单线程会让本地反推明显变慢，
+  /// 移动端放开到 `min(4, CPU 核数)`：既用上大核，又不至于在小核上抢占调度
+  /// （推理本身已在独立 isolate 里串行执行，见 [tagImage] 的 ComputeGate）。
   static int resolveIntraOpThreadCount(
     PlatformCapabilities capabilities, {
     int? processorCount,
@@ -122,7 +122,8 @@ class LocalOnnxTaggerService {
     return math.max(1, math.min(4, cores));
   }
 
-  Future<String> debugEnsurePatchedModelPathForTesting(String modelPath) {
+  @visibleForTesting
+  Future<String> ensurePatchedModelPathForTesting(String modelPath) {
     return _ensurePatchedSingleFileModelPath(modelPath);
   }
 
@@ -343,10 +344,9 @@ class LocalOnnxTaggerService {
     final source = File(modelPath);
     final stat = await source.stat();
 
-    // 【偏离上游】上游读到这里就无条件走「整份复制到临时目录再改尾部 4KB」。
-    // 绝大多数模型的 opset 本来就在支持范围内，补丁是 no-op，等于每次反推都把
-    // 一个 GB 级文件原样复制一遍——手机磁盘和寿命都吃不消。
-    // 因此先只读尾部 4KB 试补，结果与原字节一致时直接加载原文件。
+    // 先只读尾部 4KB 试补：绝大多数模型的 opset 本来就在支持范围内，补丁不改
+    // 任何字节，这时直接加载原文件，不再把几百 MB 到数 GB 的模型原样复制一份
+    // 到临时目录（多占一倍磁盘；移动端临时目录被系统清理后还要重新复制）。
     final tailStart = math.max(0, stat.size - _opsetPatchTailBytes);
     final tailBuilder = BytesBuilder(copy: false);
     await for (final chunk in source.openRead(tailStart)) {
@@ -413,8 +413,8 @@ class LocalOnnxTaggerService {
     return digest.toString().substring(0, 16);
   }
 
-  /// 【偏离上游】上游在这里自己读尾部并做补丁。补丁结果改由调用方先算出来
-  /// （才能在 no-op 时整段跳过复制），所以尾部偏移与补丁后的字节作为参数传入。
+  /// 尾部补丁由调用方先算出来（补丁不改字节时整段跳过复制），尾部偏移与
+  /// 补丁后的字节作为参数传入。
   Future<void> _copyPatchedSingleFileModel(
     File source,
     File target, {

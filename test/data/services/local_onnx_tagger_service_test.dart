@@ -136,7 +136,7 @@ void main() {
         ).writeAsBytes(List<int>.filled(8192, 0));
 
         final resolved = await const LocalOnnxTaggerService()
-            .debugEnsurePatchedModelPathForTesting(model.path);
+            .ensurePatchedModelPathForTesting(model.path);
 
         expect(resolved, model.path);
       },
@@ -156,7 +156,7 @@ void main() {
         ).writeAsBytes(bytes);
 
         final resolved = await const LocalOnnxTaggerService()
-            .debugEnsurePatchedModelPathForTesting(model.path);
+            .ensurePatchedModelPathForTesting(model.path);
         addTearDown(() async {
           final patched = File(resolved);
           if (await patched.exists()) await patched.delete();

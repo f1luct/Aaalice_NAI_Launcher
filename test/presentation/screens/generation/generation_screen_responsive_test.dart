@@ -13,6 +13,7 @@ import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:nai_launcher/presentation/adaptive/interaction_policy.dart';
 import 'package:nai_launcher/presentation/providers/layout_state_provider.dart';
 import 'package:nai_launcher/presentation/providers/shortcuts_provider.dart';
+import 'package:nai_launcher/presentation/providers/generation/workflow_panel_reveal_provider.dart';
 import 'package:nai_launcher/presentation/screens/generation/desktop_layout.dart';
 import 'package:nai_launcher/presentation/screens/generation/generation_screen.dart';
 import 'package:nai_launcher/presentation/screens/generation/mobile_layout.dart';
@@ -129,6 +130,26 @@ void main() {
     },
   );
 
+  testWidgets('手机上请求呈现工作流面板时打开参数抽屉', (tester) async {
+    PlatformCapabilities.debugOverride = PlatformCapabilities.forPlatform(
+      TargetPlatform.android,
+    );
+    await tester.binding.setSurfaceSize(const Size(360, 760));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await _pumpGeneration(tester);
+    await tester.pump(const Duration(milliseconds: 100));
+    final drawer = find.byKey(const ValueKey('generation-parameters-drawer'));
+    expect(drawer, findsNothing);
+
+    ProviderScope.containerOf(
+      tester.element(find.byType(GenerationScreen)),
+    ).read(workflowPanelRevealProvider.notifier).request();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(drawer, findsOneWidget);
+  });
+
   testWidgets('layout state survives the 840 precise-pointer boundary', (
     tester,
   ) async {
@@ -182,9 +203,8 @@ void main() {
       find.byKey(const Key('generation-fixed-tags-overlay')),
       findsOneWidget,
     );
-    // iOS 分支：Token 计数有 400ms 防抖（prompt_token_counter_provider.dart）。
-    // 这条用例的 container 由 addTearDown 释放，晚于框架的挂起计时器检查，
-    // 所以先把防抖计时器走完。
+    // Token 计数有 400ms 防抖（prompt_token_counter_provider.dart）。这条用例的
+    // container 由 addTearDown 释放，晚于框架的挂起计时器检查，先走完计时器。
     await tester.pump(const Duration(milliseconds: 400));
     flutterErrors.expectNoErrors(reason: '839↔840 boundary transition');
   });

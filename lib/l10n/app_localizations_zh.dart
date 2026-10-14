@@ -3668,6 +3668,13 @@ class AppLocalizationsZh extends AppLocalizations {
   String get onlineGallery_tagContextMenuTooltip => '右键可加入黑名单或输出过滤';
 
   @override
+  String get onlineGallery_outputFilteredTagTooltipTouch =>
+      '此标签会在复制、发送和加入队列时被剔除；长按可管理';
+
+  @override
+  String get onlineGallery_tagContextMenuTooltipTouch => '长按可加入黑名单或输出过滤';
+
+  @override
   String onlineGallery_outputFilterTagAdded(Object tag) {
     return '已将 $tag 加入输出过滤';
   }
@@ -15320,13 +15327,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get generation_quickTools => '快捷工具';
 
   @override
-  String get onlineGallery_outputFilteredTagTooltipTouch =>
-      '此标签会在复制、发送和加入队列时被剔除；长按可管理';
-
-  @override
-  String get onlineGallery_tagContextMenuTooltipTouch => '长按可加入黑名单或输出过滤';
-
-  @override
   String get image_albumPermissionDenied =>
       '相册权限被拒绝。请在「设置 > 隐私 > 照片」中允许本应用「仅添加照片」。';
 
@@ -19027,6 +19027,13 @@ class AppLocalizationsZhHant extends AppLocalizationsZh {
 
   @override
   String get onlineGallery_tagContextMenuTooltip => '右鍵可加入黑名單或輸出過濾';
+
+  @override
+  String get onlineGallery_outputFilteredTagTooltipTouch =>
+      '此標籤會在複製、傳送和加入佇列時被剔除；長按可管理';
+
+  @override
+  String get onlineGallery_tagContextMenuTooltipTouch => '長按可加入黑名單或輸出過濾';
 
   @override
   String onlineGallery_outputFilterTagAdded(Object tag) {
@@ -30680,13 +30687,6 @@ class AppLocalizationsZhHant extends AppLocalizationsZh {
 
   @override
   String get generation_quickTools => '快捷工具';
-
-  @override
-  String get onlineGallery_outputFilteredTagTooltipTouch =>
-      '此標籤會在複製、傳送和加入佇列時被剔除；長按可管理';
-
-  @override
-  String get onlineGallery_tagContextMenuTooltipTouch => '長按可加入黑名單或輸出過濾';
 
   @override
   String get image_albumPermissionDenied =>

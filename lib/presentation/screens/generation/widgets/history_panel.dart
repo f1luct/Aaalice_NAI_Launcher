@@ -970,10 +970,8 @@ class _HistoryPanelState extends ConsumerState<HistoryPanel> {
                                     historyImage.bytes,
                                   )
                                 : null,
-                            // 偏离上游：上游只判 canUseAsGenerationInput。
-                            // Krita 桥接是桌面专属（PlatformCapabilities
-                            // .supportsKritaBridge => isDesktop），iOS 上菜单
-                            // 仍会出现这一项，点了只弹「未连接」。
+                            // Krita 桥接只在桌面可用，移动端菜单里出现这一项
+                            // 点了只会提示未连接
                             onSendToKrita:
                                 historyImage.canUseAsGenerationInput &&
                                     PlatformCapabilities
@@ -1193,7 +1191,7 @@ class _HistoryPanelState extends ConsumerState<HistoryPanel> {
           onUpscale: image.canUseAsGenerationInput
               ? () => ImageWorkflowLauncher.openUpscale(ref, imageBytes)
               : null,
-          // 偏离上游：同上，Krita 桥接是桌面专属能力
+          // Krita 桥接只在桌面可用
           onSendToKrita:
               image.canUseAsGenerationInput &&
                   PlatformCapabilities.current.supportsKritaBridge

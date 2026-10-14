@@ -360,14 +360,11 @@ class NAIImageEnhancementApiService {
 
 /// NAIImageEnhancementApiService Provider
 ///
-/// 偏离上游：上游这里取的是通用 `dioClientProvider`，而通用 client 在没有系统
-/// 代理时会切到 `Http2Adapter`，api.novelai.net 上该适配器连接异常（表现为接口
-/// 直接失败、错误信息只剩"未知错误"）。桌面端默认经系统代理走 HTTP/1.1，所以
-/// 这条路径在桌面永远不会暴露；移动端默认直连，放大 / 增强 / Vibe 编码 /
-/// Director Tools 全部走这里，一碰就炸。
-/// 因此固定使用 `imageGenerationDioClientProvider`（始终是可中断的 HTTP/1.1
-/// 默认适配器），与图像生成接口保持同一条连接形态。
-/// 跟上游时请勿把这行"对齐"回 dioClientProvider。
+/// 使用 `imageGenerationDioClientProvider`（始终是可中断的 HTTP/1.1 适配器），
+/// 不用通用 `dioClientProvider`：通用 client 在没有代理时切到 `Http2Adapter`，
+/// 一是取消请求不会终止 HTTP/2 流（见 imageGenerationDioClient 的说明），放大、
+/// 增强、Vibe 编码和导演工具同样是计费请求；二是移动端直连时该适配器访问
+/// image.novelai.net 会直接失败，错误只剩"未知错误"。
 @riverpod
 NAIImageEnhancementApiService naiImageEnhancementApiService(Ref ref) {
   final dio = ref.watch(imageGenerationDioClientProvider);

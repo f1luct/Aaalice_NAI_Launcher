@@ -61,9 +61,8 @@ void main() {
     expect(params.sampler, Samplers.kEulerAncestral);
   });
 
-  // 定制回归（偏离上游）：上游 updatePrompt/updateNegativePrompt 一律
-  // Future.microtask 延迟写入，同一事件内连续两次输入会留下过期写入并与
-  // prompt_input 的回写监听形成永久振荡。非构建阶段必须同步落地。
+  // 同一事件内连续两次输入若都延后写入，会留下过期写入并与 prompt_input 的
+  // 回写监听形成永久振荡。非构建阶段必须同步落地。
   test('prompt updates apply synchronously outside the build phase', () {
     final container = ProviderContainer();
     addTearDown(container.dispose);

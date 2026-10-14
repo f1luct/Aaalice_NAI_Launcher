@@ -24,7 +24,6 @@ import '../../utils/asset_protection_guard.dart';
 import '../../widgets/common/app_toast.dart';
 import '../../widgets/common/owned_scroll_controller.dart';
 import 'widgets/history_panel.dart';
-import 'widgets/image_preview.dart';
 
 class MobileGenerationController extends ChangeNotifier
     with WidgetsBindingObserver {
@@ -33,14 +32,6 @@ class MobileGenerationController extends ChangeNotifier
         mobileShellOverlayNotifierProvider.notifier,
       ) {
     WidgetsBinding.instance.addObserver(this);
-    // 手机上参数面板在抽屉里，点「放大 / 增强」后屏幕上不会出现任何东西，
-    // 看起来就是按钮坏了（上游至今如此：image_workflow_launcher 只调
-    // setPanelExpanded，那在桌面常驻面板上才看得见）。image_preview 那边
-    // 只留注册点、不写死侧别，因为左右抽屉的分工被我们换过（左=快捷工具、
-    // 右=参数面板），写死会在分工再变时静默失效。
-    // 存成字段是为了 dispose 时 identical 比对得上。
-    _revealWorkflowPanel = openParameterDrawer;
-    MobileWorkflowPanelReveal.register(_revealWorkflowPanel);
     final storage = ref.read(localStorageServiceProvider);
     showGestureHint =
         !(storage.getSetting<bool>(
@@ -67,7 +58,6 @@ class MobileGenerationController extends ChangeNotifier
   final WidgetRef ref;
   final MobileShellOverlayNotifier shellOverlayNotifier;
   final GlobalKey<ScaffoldState> scaffoldKey = GlobalKey<ScaffoldState>();
-  late final VoidCallback _revealWorkflowPanel;
   final GlobalKey embeddedPromptKey = GlobalKey();
   final FocusScopeNode agentFocusScope = FocusScopeNode(
     debugLabel: 'Mobile agent chat',
@@ -430,7 +420,6 @@ class MobileGenerationController extends ChangeNotifier
 
   @override
   void dispose() {
-    MobileWorkflowPanelReveal.unregister(_revealWorkflowPanel);
     agentFocusScope.dispose();
     _disposed = true;
     gestureHintTimer?.cancel();

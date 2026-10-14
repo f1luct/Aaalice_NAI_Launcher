@@ -80,11 +80,10 @@ final promptTokenUsageProvider =
       final aliasResolver = ref.read(aliasResolverServiceProvider.notifier);
       final serviceFuture = ref.watch(promptTokenCounterServiceProvider.future);
 
-      // 偏离上游：上游在这里直接 await 服务并立刻全量重算。分词是纯 Dart
-      // 同步执行（跑在 UI 线程），逐键全量重算会在快速连续输入（如连按删除、
-      // 中文输入法组合串）时拖垮主线程——移动端尤其明显。改为停顿 400ms 后
-      // 才真正计数：期间的重建会触发 onDispose，放弃本次计算并取消计时器。
-      // token 条用的是 skipLoadingOnReload，会保留旧值，不会闪烁。
+      // 停止输入 400ms 后才计数。分词是纯 Dart、在 UI 线程同步执行，逐键全量
+      // 重算会在连续输入（连按删除、输入法组合串）时卡住主线程，移动端尤其
+      // 明显。期间的重建会触发 onDispose，放弃本次计算并取消计时器；token 条
+      // 使用 skipLoadingOnReload，等待期间保留旧值，不会闪烁。
       var restarted = false;
       final debounce = Completer<void>();
       final debounceTimer = Timer(

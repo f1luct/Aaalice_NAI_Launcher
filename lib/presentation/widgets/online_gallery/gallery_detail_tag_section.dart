@@ -47,12 +47,10 @@ class GalleryDetailTagSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 偏离上游：上游的两条 tooltip 文案写死成「右键可…」，而 SimpleTagChip
-    // 的菜单入口在触屏上是长按（见 tag_chip.dart）。文案与真实手势对不上时，
-    // 等于这个功能在手机上不存在，所以按 interactionPolicy 切一套触屏说法。
-    // 调用方传进来的文案保持不变，指针设备仍然看到上游原文。
-    // 本地化按可空取：取不到（如未挂 AppLocalizations 的上游组件测试）就
-    // 退回调用方给的文案，不在这里引入新的硬依赖。
+    // 调用方传入的 tooltip 写的是「右键可…」，而 SimpleTagChip 的菜单入口在
+    // 触屏上是长按（见 tag_chip.dart），所以触屏改用长按的说法；指针设备仍显示
+    // 调用方的文案。本地化按可空取，取不到（如组件测试未挂 AppLocalizations）
+    // 就退回调用方的文案。
     final touchL10n = context.interactionPolicy.shouldExposeTouchAlternatives
         ? AppLocalizations.of(context)
         : null;

@@ -12,10 +12,10 @@ part 'proxy_settings_provider.g.dart';
 /// 代理开关的平台默认值：桌面启用，移动端不启用。
 ///
 /// 偏离上游：上游 [ProxySettingsNotifier.build] 是 `?? true`，全平台默认开启
-/// （桌面靠系统代理自动探测，代价很低）。手机通常直连，而且读不到系统代理，
-/// 默认开着只会让人以为「已经走代理了」，所以移动端默认关闭。
+/// （桌面靠系统代理自动探测，代价很低）。手机通常直连，默认开着只会让人以为
+/// 「已经走代理了」，所以移动端默认关闭。
 ///
-/// 启动期注入 `HttpOverrides.global` 的 `_configureSystemProxy`
+/// 启动期注入 `HttpOverrides.global` 的 `resolveStartupProxyAddress`
 /// （startup_initialization_provider.dart）读的是同一个默认值，两处必须保持一致，
 /// 否则手机首启会出现「设置页显示未启用、实际却注入了代理」。
 bool defaultProxyEnabled(PlatformCapabilities capabilities) =>
@@ -23,12 +23,9 @@ bool defaultProxyEnabled(PlatformCapabilities capabilities) =>
 
 /// 把存储里的代理模式解析成当前平台真正可用的模式。
 ///
-/// 偏离上游：上游没有这一层，auto/manual 全平台等价可选。但
-/// [ProxyService.getSystemProxyAddress] 对 iOS/Android 直接返回 null
-/// （proxy_service.dart 只实现了 Windows/macOS/Linux），auto 在移动端永远拿不到
-/// 地址。所以移动端一律按 manual 解析；network_settings_section 相应隐藏了
-/// auto/manual 选择器，startup_initialization_provider 的启动期注入同样处理。
-/// 这里只做读取时的折算，不回写存储，桌面端换回来时用户原来的选择还在。
+/// [ProxyService.getSystemProxyAddress] 只实现了 Windows / macOS / Linux，
+/// 移动端的 auto 永远拿不到地址，所以移动端一律按 manual 解析。只在读取时
+/// 折算、不回写存储，同一份设置同步到桌面端时用户原来的选择仍然有效。
 ProxyMode resolveProxyMode(
   ProxyMode storedMode,
   PlatformCapabilities capabilities,
@@ -40,12 +37,11 @@ class ProxySettingsNotifier extends _$ProxySettingsNotifier {
   @override
   ProxySettings build() {
     final storage = ref.read(localStorageServiceProvider);
-    final capabilities = PlatformCapabilities.current;
 
     // 从本地存储读取代理设置
     final enabled =
         storage.getSetting<bool>(StorageKeys.proxyEnabled) ??
-        defaultProxyEnabled(capabilities);
+        defaultProxyEnabled(PlatformCapabilities.current);
     final modeStr = storage.getSetting<String>(StorageKeys.proxyMode) ?? 'auto';
     final manualHost = storage.getSetting<String>(StorageKeys.proxyManualHost);
     final manualPort = storage.getSetting<int>(StorageKeys.proxyManualPort);
@@ -60,7 +56,7 @@ class ProxySettingsNotifier extends _$ProxySettingsNotifier {
 
     return ProxySettings(
       enabled: enabled,
-      mode: resolveProxyMode(mode, capabilities),
+      mode: resolveProxyMode(mode, PlatformCapabilities.current),
       manualHost: manualHost,
       manualPort: manualPort,
     );

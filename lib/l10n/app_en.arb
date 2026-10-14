@@ -1704,6 +1704,14 @@
   "onlineGallery_blacklistMenuHint": "Hide gallery images containing this tag",
   "onlineGallery_outputFilteredTagTooltip": "Removed when copying, sending, or adding to queue; right-click to manage",
   "onlineGallery_tagContextMenuTooltip": "Right-click to add to the blacklist or output filter",
+  "onlineGallery_outputFilteredTagTooltipTouch": "Removed when copying, sending, or adding to queue; long-press to manage",
+  "@onlineGallery_outputFilteredTagTooltipTouch": {
+    "description": "Tooltip for an output-filtered tag chip on touch devices; mirrors onlineGallery_outputFilteredTagTooltip."
+  },
+  "onlineGallery_tagContextMenuTooltipTouch": "Long-press to add to the blacklist or output filter",
+  "@onlineGallery_tagContextMenuTooltipTouch": {
+    "description": "Tooltip for a tag chip on touch devices, where there is no right-click; mirrors onlineGallery_tagContextMenuTooltip."
+  },
   "onlineGallery_outputFilterTagAdded": "Added {tag} to the output filter",
   "@onlineGallery_outputFilterTagAdded": {
     "placeholders": {
@@ -7401,14 +7409,6 @@
   "generation_quickTools": "Quick tools",
   "@generation_quickTools": {
       "description": "Tooltip for the generation screen's leading app-bar button that opens the left drawer holding the fixed-tag and character quick toggles."
-  },
-  "onlineGallery_outputFilteredTagTooltipTouch": "Removed when copying, sending, or adding to queue; long-press to manage",
-  "@onlineGallery_outputFilteredTagTooltipTouch": {
-      "description": "Tooltip for an output-filtered tag chip on touch devices; mirrors onlineGallery_outputFilteredTagTooltip."
-  },
-  "onlineGallery_tagContextMenuTooltipTouch": "Long-press to add to the blacklist or output filter",
-  "@onlineGallery_tagContextMenuTooltipTouch": {
-      "description": "Tooltip for a tag chip on touch devices, where there is no right-click; mirrors onlineGallery_tagContextMenuTooltip."
   },
   "image_albumPermissionDenied": "Photos access was denied. Allow \"Add Photos Only\" for this app in Settings > Privacy > Photos.",
   "@image_albumPermissionDenied": {

@@ -10,9 +10,8 @@ import 'package:nai_launcher/presentation/widgets/character/add_character_button
 
 import '../../../helpers/memory_local_storage.dart';
 
-/// 到达官方角色上限后 addCharacter 只写日志就 return。上游没有在这个组件里
-/// 做任何上限判断，触屏上只有 tooltip 等于没有提示，这里锁住"变灰 + 点击有
-/// 可见反馈"两条行为。
+/// 到达官方角色上限后 addCharacter 只写日志就返回。锁住两条行为：添加入口
+/// 变灰，点击时有可见提示（触屏上看不到 tooltip）。
 ///
 /// 角色配置与设置都换成内存实现：在 testWidgets 的假异步区里写真实 Hive，
 /// 落盘 Future 永远完成不了，tearDownAll 的 Hive.close() 会一直挂住。
