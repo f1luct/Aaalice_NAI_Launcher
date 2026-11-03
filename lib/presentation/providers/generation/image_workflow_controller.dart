@@ -9,11 +9,13 @@ import '../../../core/constants/api_constants.dart';
 import '../../../core/constants/storage_keys.dart';
 import '../../../core/storage/local_storage_service.dart';
 import '../../../core/utils/app_logger.dart';
+import '../../../core/utils/enhance_request_plan.dart';
 import '../../../core/utils/focused_inpaint_utils.dart';
 import '../../../core/utils/nai_resolution_adapter.dart';
 import '../../../data/models/image/image_params.dart';
 import 'generation_panel_expansion_provider.dart';
 import 'generation_params_notifier.dart';
+import 'generation_request_preparation_service.dart';
 
 enum ImageWorkflowMode { base, inpaint, enhance, upscale }
 
@@ -428,6 +430,19 @@ class ImageWorkflowState {
   bool get isEnhance => mode == ImageWorkflowMode.enhance;
   bool get isInpaint => mode == ImageWorkflowMode.inpaint;
   bool get isUpscale => mode == ImageWorkflowMode.upscale;
+
+  GenerationFocusedSnapshot get focusedSnapshot => GenerationFocusedSnapshot(
+    enabled: focusedInpaintEnabled,
+    minimumContextMegaPixels: minimumContextMegaPixels,
+    selectionRect: focusedSelectionRect,
+    contextCrop: focusedContextCrop,
+  );
+
+  /// 聚焦重绘既没有选区也没有取景框，聚焦区域取蒙版外接矩形。
+  bool get focusesOnMaskExtent =>
+      focusedInpaintEnabled &&
+      focusedSelectionRect == null &&
+      focusedContextCrop == null;
 
   ImageWorkflowState copyWith({
     ImageWorkflowMode? mode,
@@ -982,7 +997,7 @@ class ImageWorkflowController extends Notifier<ImageWorkflowState> {
         imageBytes,
         currentWidth: sourceWidth ?? _params.width,
         currentHeight: sourceHeight ?? _params.height,
-        isStableDiffusionFamily: _usesStableDiffusionImportBounds(
+        isStableDiffusionFamily: ImageModels.usesStableDiffusionImportBounds(
           _params.model,
         ),
       );
@@ -1025,7 +1040,9 @@ class ImageWorkflowController extends Notifier<ImageWorkflowState> {
       imageBytes,
       currentWidth: sourceWidth ?? params.width,
       currentHeight: sourceHeight ?? params.height,
-      isStableDiffusionFamily: _usesStableDiffusionImportBounds(params.model),
+      isStableDiffusionFamily: ImageModels.usesStableDiffusionImportBounds(
+        params.model,
+      ),
     );
 
     if (_isDisposed || requestId != _sourceImageRequestId) return;
@@ -1371,7 +1388,7 @@ class ImageWorkflowController extends Notifier<ImageWorkflowState> {
           sourceImage,
           currentWidth: _params.width,
           currentHeight: _params.height,
-          isStableDiffusionFamily: _usesStableDiffusionImportBounds(
+          isStableDiffusionFamily: ImageModels.usesStableDiffusionImportBounds(
             _params.model,
           ),
         );
@@ -1676,29 +1693,23 @@ class ImageWorkflowController extends Notifier<ImageWorkflowState> {
       return;
     }
 
-    final baseWidth = state.sourceWidth ?? state.baseWidth ?? _params.width;
-    final baseHeight = state.sourceHeight ?? state.baseHeight ?? _params.height;
-    // max 档按原尺寸发请求，由服务端等比放到面积上限；模型不支持或原图太大时
-    // 自动退回倍率档，避免 upscaled_enhance 发给不认识它的模型。
-    final useMaxScale = state.enhance.maxScale && isMaxEnhanceAvailable;
-    final factor = useMaxScale ? 1.0 : effectiveEnhanceFactor;
-    final targetSize = EnhanceScales.resolveTargetSize(
-      sourceWidth: baseWidth,
-      sourceHeight: baseHeight,
-      factor: factor,
+    final settings = state.enhance;
+    final plan = EnhanceRequestPlan.resolve(
+      capabilities: _params.capabilities,
+      sourceWidth: state.sourceWidth ?? state.baseWidth ?? _params.width,
+      sourceHeight: state.sourceHeight ?? state.baseHeight ?? _params.height,
+      level: settings.level,
+      factor: settings.upscaleFactor,
+      maxScale: settings.maxScale,
+      individual: settings.showIndividualSettings
+          ? (strength: settings.strength, noise: settings.noise)
+          : null,
     );
-    final resolved = state.enhance.showIndividualSettings
-        ? (strength: state.enhance.strength, noise: state.enhance.noise)
-        : EnhanceLevels.resolve(state.enhance.level);
 
-    _paramsNotifier.updateSize(
-      targetSize.width,
-      targetSize.height,
-      persist: false,
-    );
-    _paramsNotifier.updateStrength(resolved.strength);
-    _paramsNotifier.updateNoise(resolved.noise);
-    _paramsNotifier.updateUpscaledEnhance(useMaxScale);
+    _paramsNotifier.updateSize(plan.width, plan.height, persist: false);
+    _paramsNotifier.updateStrength(plan.strength);
+    _paramsNotifier.updateNoise(plan.noise);
+    _paramsNotifier.updateUpscaledEnhance(plan.maxScale);
     _paramsNotifier.updateIsEnhanceRequest(true);
     _paramsNotifier.updateAction(ImageGenerationAction.img2img);
   }
@@ -1739,13 +1750,6 @@ class ImageWorkflowController extends Notifier<ImageWorkflowState> {
 
     _paramsNotifier.updateIsOutpaint(false);
     _paramsNotifier.updateAction(ImageGenerationAction.img2img);
-  }
-
-  bool _usesStableDiffusionImportBounds(String model) {
-    final baseModel = ImageModels.resolveBaseModel(model);
-    return baseModel == ImageModels.animeCurated ||
-        baseModel == ImageModels.animeFull ||
-        baseModel == ImageModels.furry;
   }
 
   ({int width, int height}) _clampToRequestLimits(int width, int height) {

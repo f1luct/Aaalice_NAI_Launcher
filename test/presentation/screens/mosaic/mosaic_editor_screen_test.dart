@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:nai_launcher/core/derivatives/derivative_registry.dart';
+import 'package:nai_launcher/core/derivatives/derivative_render.dart';
 import 'package:nai_launcher/data/models/mosaic/mosaic_settings.dart';
 import 'package:nai_launcher/core/mosaic/mosaic_render_service.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
@@ -14,6 +16,7 @@ import 'package:nai_launcher/presentation/providers/mosaic_settings_provider.dar
 import 'package:nai_launcher/presentation/screens/mosaic/mosaic_editor_canvas.dart';
 import 'package:nai_launcher/presentation/screens/mosaic/mosaic_editor_screen.dart';
 
+import '../../../helpers/derivative_copy_save_scenarios.dart';
 import '../../../helpers/labeled_rows_expectations.dart';
 
 class _Settings extends MosaicSettingsNotifier {
@@ -161,7 +164,7 @@ void main() {
         );
         expect(canvasAfter.regions, same(canvasBefore.regions));
         expect(canvasAfter.regions, same(request!.regions));
-        pending.completeError(const MosaicCancelledException());
+        pending.completeError(const DerivativeRenderCancelledException());
         await tester.pumpAndSettle();
         expect(
           tester
@@ -179,7 +182,7 @@ void main() {
         expect(tester.takeException(), isNull);
       } finally {
         if (!pending.isCompleted) {
-          pending.completeError(const MosaicCancelledException());
+          pending.completeError(const DerivativeRenderCancelledException());
         }
         await tester.pump();
         await tester.pumpWidget(const SizedBox.shrink());
@@ -350,6 +353,51 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+
+  group('save copy', () {
+    late _RecordingSettings settings;
+
+    setUp(() => settings = _RecordingSettings());
+
+    defineDerivativeCopySaveTests<MosaicRenderResult>(
+      kind: DerivativeKind.mosaic,
+      editorType: MosaicEditorScreen,
+      surfaceSize: const Size(1180, 900),
+      saveButton: find.widgetWithIcon(FilledButton, Icons.save_alt),
+      savingLabel: (l10n) => l10n.mosaic_saving,
+      savedLabel: (l10n) => l10n.mosaic_saved,
+      galleryIndexFailedLabel: (l10n) => l10n.mosaic_galleryRefreshFailed,
+      systemGalleryFailedLabel: (l10n) => l10n.mosaic_systemGalleryExportFailed,
+      overrides: () => [mosaicSettingsProvider.overrideWith(() => settings)],
+      renderResult: (bytes, fileName) => MosaicRenderResult(
+        bytes: bytes,
+        fileName: fileName,
+        width: 80,
+        height: 60,
+        metadataPreserved: false,
+      ),
+      buildEditor: (render) => MosaicEditorScreen(
+        sourceBytes: bytes,
+        sourceFileName: 'source.png',
+        sourcePath: 'source.png',
+        defaultsOnly: false,
+        decodePreview: (_) async => _preview.clone(),
+        renderCopy: (request, {cancellationToken}) =>
+            render(request.sourceBytes),
+      ),
+      expectEditorEffects: ({required written}) =>
+          expect(settings.remembered, hasLength(written ? 1 : 0)),
+    );
+  });
+}
+
+class _RecordingSettings extends _Settings {
+  final remembered = <MosaicSettings>[];
+
+  @override
+  Future<void> saveDefaults([MosaicSettings? configuration]) async {
+    remembered.add(configuration ?? state.configuration);
+  }
 }
 
 Future<void> _mount(

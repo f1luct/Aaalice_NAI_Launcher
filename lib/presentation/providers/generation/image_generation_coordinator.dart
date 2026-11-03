@@ -443,7 +443,9 @@ class ImageGenerationCoordinator {
         if (_aborted(handle) || _skipCurrentRequest) return;
         // A server-side "Cancelled" result is a generation error. Only the
         // local run token maps cancellation to GenerationCancelled.
-        if (_isRemoteCancelled(error) || mode == _RequestMode.fallback) {
+        if (_isRemoteCancelled(error) ||
+            isDeterministicGenerationError(error) ||
+            mode == _RequestMode.fallback) {
           rethrow;
         }
         if (_isConcurrencyLimited(error)) {
@@ -495,7 +497,9 @@ class ImageGenerationCoordinator {
         if (_aborted(handle) || _skipCurrentRequest) {
           return const _RequestResult();
         }
-        if (_isRemoteCancelled(error) || attempt >= _retryDelays.length) {
+        if (_isRemoteCancelled(error) ||
+            isDeterministicGenerationError(error) ||
+            attempt >= _retryDelays.length) {
           rethrow;
         }
         AppLogger.w(

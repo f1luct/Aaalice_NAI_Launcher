@@ -157,18 +157,13 @@ void main() {
       },
     );
 
-    test('image comparison source accepts enhance grid rounding only', () {
+    test('image comparison source accepts enhance grid rounding', () {
       final sourceBytes = _validImageBytes(width: 832, height: 1216);
       final source = ImageComparisonSource.fromBytes(sourceBytes);
 
       expect(source, isNotNull);
       expect(source!.bytes, orderedEquals(sourceBytes));
       expect(source.bytes, isNot(same(sourceBytes)));
-      expect(source.isCompatibleWithDimensions(1664, 2432), isTrue);
-      expect(source.isCompatibleWithDimensions(1280, 1792), isTrue);
-      expect(source.isCompatibleWithDimensions(1280, 1856), isTrue);
-      expect(source.isCompatibleWithDimensions(1792, 1792), isFalse);
-      expect(source.isCompatibleWithDimensions(1280, 2048), isFalse);
 
       final compatible = GeneratedImage.create(
         _validImageBytes(width: 1280, height: 1792),
@@ -292,6 +287,79 @@ void main() {
           state.errorMessage,
           'GENERATION_ERROR_UNSUPPORTED_RANDOM_MODEL|future-unknown-model',
         );
+      },
+    );
+
+    test(
+      'externally supplied prompts bypass random mode while page runs keep it',
+      () async {
+        final mockApiService = MockNAIImageGenerationApiService();
+        ImageParams? capturedParams;
+        when(
+          () => mockApiService.generateImage(
+            any(),
+            onProgress: any(named: 'onProgress'),
+            focusedInpaintEnabled: any(named: 'focusedInpaintEnabled'),
+            minimumContextMegaPixels: any(named: 'minimumContextMegaPixels'),
+            focusedSelectionRect: any(named: 'focusedSelectionRect'),
+          ),
+        ).thenAnswer((invocation) async {
+          capturedParams = invocation.positionalArguments.first as ImageParams;
+          return ([_validImageBytes(width: 512, height: 768)], <int, String>{});
+        });
+        when(
+          () => mockApiService.generateImageStream(
+            any(),
+            focusedInpaintEnabled: any(named: 'focusedInpaintEnabled'),
+            minimumContextMegaPixels: any(named: 'minimumContextMegaPixels'),
+            focusedSelectionRect: any(named: 'focusedSelectionRect'),
+          ),
+        ).thenAnswer((_) => const Stream.empty());
+        container.dispose();
+        container = _createAuthenticatedContainer(
+          overrides: [
+            naiImageGenerationApiServiceProvider.overrideWithValue(
+              mockApiService,
+            ),
+            subscriptionNotifierProvider.overrideWith(
+              TestSubscriptionNotifier.new,
+            ),
+          ],
+        );
+        await container
+            .read(notificationSettingsNotifierProvider.notifier)
+            .setSoundEnabled(false);
+        container.read(subscriptionNotifierProvider);
+        container.read(randomPromptModeProvider.notifier).set(true);
+        final params = container
+            .read(generationParamsNotifierProvider)
+            .copyWith(
+              model: 'future-unknown-model',
+              prompt: 'agent prompt',
+              width: 512,
+              height: 768,
+            );
+
+        final notifier = container.read(
+          imageGenerationNotifierProvider.notifier,
+        );
+
+        await notifier.generate(params);
+        expect(
+          container.read(imageGenerationNotifierProvider).errorMessage,
+          'GENERATION_ERROR_UNSUPPORTED_RANDOM_MODEL|future-unknown-model',
+        );
+        expect(capturedParams, isNull);
+
+        await notifier.generate(
+          params,
+          preserveCharacterSnapshot: true,
+          bypassRandomPrompt: true,
+        );
+        final state = container.read(imageGenerationNotifierProvider);
+        expect(state.status, GenerationStatus.completed);
+        expect(capturedParams?.prompt, 'agent prompt');
+        expect(container.read(randomPromptModeProvider), isTrue);
       },
     );
 
@@ -836,11 +904,9 @@ void main() {
         expect(savedImage.preserveOriginalBytesOnSave, isTrue);
         expect(savedImage.bytes, orderedEquals(originalBytes));
         expect(savedBytes, orderedEquals(originalBytes));
-        expect(
-          UnifiedMetadataParser.extractPngTextData(savedBytes)['prompt'],
-          comfyPrompt,
-        );
-        expect(ImageSaveUtils.hasEmbeddedNovelAiMetadata(savedBytes), isFalse);
+        final textData = UnifiedMetadataParser.extractPngTextData(savedBytes);
+        expect(textData['prompt'], comfyPrompt);
+        expect(textData, isNot(contains('Comment')));
       },
     );
 

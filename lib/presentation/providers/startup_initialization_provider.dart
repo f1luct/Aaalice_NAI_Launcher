@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:video_player_media_kit/video_player_media_kit.dart';
@@ -11,7 +12,7 @@ import '../../core/network/proxy_service.dart';
 import '../../core/network/system_proxy_http_overrides.dart';
 import '../../core/platform/platform_capabilities.dart';
 import '../../core/services/data_migration_service.dart';
-import '../../core/services/diagnostic_log_export_service.dart';
+import '../../core/services/file_export_service.dart';
 import '../../core/shortcuts/shortcut_storage.dart';
 import '../../core/utils/app_logger.dart';
 import '../../core/utils/hive_startup_box_opener.dart';
@@ -38,6 +39,7 @@ import 'local_gallery_provider.dart';
 import 'online_gallery_provider.dart';
 import 'precise_ref_library_provider.dart';
 import '../../core/network/proxy_settings_provider.dart';
+import '../../data/models/settings/proxy_settings.dart';
 import 'random_preset_provider.dart';
 import 'tag_library_page_provider.dart';
 import 'tag_library_provider.dart';
@@ -82,11 +84,11 @@ final startupInitializationTasksProvider = Provider<StartupInitializationTasks>(
             true;
         await AppLogger.setFileLoggingEnabled(fileLoggingEnabled);
         try {
-          await DiagnosticLogExportService.cleanupStaleTemporaryFiles();
+          await FileExportService.cleanupTemporaryOutputs();
         } on Object catch (error) {
           AppLogger.w(
-            'Unable to clean stale diagnostic exports: $error',
-            'Diagnostics',
+            'Unable to clean stale temporary exports: $error',
+            'FileExport',
           );
         }
 
@@ -288,13 +290,27 @@ final startupInitializationTasksProvider = Provider<StartupInitializationTasks>(
 
 void _configureSystemProxy(Box<dynamic> settingsBox) {
   final capabilities = PlatformCapabilities.operatingSystem;
-
-  // 偏离上游：上游这里是 `if (!capabilities.isDesktop) return;`。而这是全仓唯一写
-  // HttpOverrides.global 的地方，后果是移动端的代理开关可点可存但永不生效——
-  // 用户以为配好了，请求其实还是直连。所以这里放行移动端。
   if (!capabilities.isDesktop && !capabilities.isMobile) return;
 
-  final proxyEnabled =
+  final proxyAddress = resolveStartupProxyAddress(settingsBox, capabilities);
+  SystemProxyHttpOverrides.applyProxyAddress(proxyAddress);
+  if (proxyAddress != null && proxyAddress.isNotEmpty) {
+    AppLogger.i('Applied proxy: $proxyAddress', 'NETWORK');
+  } else {
+    AppLogger.d('No proxy applied (disabled or no address)', 'NETWORK');
+  }
+}
+
+/// 启动时要注入 [HttpOverrides.global] 的代理地址，未启用或拿不到时返回 null。
+///
+/// 启动时初始化全局路由，后续设置修改由 ProxySettingsNotifier 即时应用。
+/// 模式按 [resolveProxyMode] 折算：移动端读不到系统代理，只使用手动地址。
+@visibleForTesting
+String? resolveStartupProxyAddress(
+  Box<dynamic> settingsBox,
+  PlatformCapabilities capabilities,
+) {
+  final enabled =
       settingsBox.get(
             StorageKeys.proxyEnabled,
             // 偏离上游：上游是全平台 defaultValue: true。默认值与
@@ -302,37 +318,23 @@ void _configureSystemProxy(Box<dynamic> settingsBox) {
             defaultValue: defaultProxyEnabled(capabilities),
           )
           as bool;
-  if (!proxyEnabled) {
-    AppLogger.d('Proxy disabled by user settings', 'NETWORK');
-    return;
-  }
+  if (!enabled) return null;
 
   final storedMode =
       settingsBox.get(StorageKeys.proxyMode, defaultValue: 'auto') as String;
-  // 偏离上游：移动端只注入 manual 模式。ProxyService.getSystemProxyAddress() 对
-  // iOS/Android 返回 null，auto 在手机上永远拿不到地址；与
-  // resolveProxyMode（proxy_settings_provider.dart）的折算保持一致。
-  final proxyMode = capabilities.isMobile ? 'manual' : storedMode;
-  String? proxyAddress;
-  if (proxyMode == 'manual') {
+  final mode = resolveProxyMode(
+    ProxyMode.values.asNameMap()[storedMode] ?? ProxyMode.auto,
+    capabilities,
+  );
+  if (mode == ProxyMode.manual) {
     final host = settingsBox.get(StorageKeys.proxyManualHost) as String?;
     final port = settingsBox.get(StorageKeys.proxyManualPort) as int?;
     if (host != null && host.isNotEmpty && port != null && port > 0) {
-      proxyAddress = '$host:$port';
+      return '$host:$port';
     }
-  } else {
-    proxyAddress = ProxyService.getSystemProxyAddress();
+    return null;
   }
-
-  if (proxyAddress != null && proxyAddress.isNotEmpty) {
-    HttpOverrides.global = SystemProxyHttpOverrides('PROXY $proxyAddress');
-    AppLogger.i('Applied proxy: $proxyAddress (mode: $proxyMode)', 'NETWORK');
-  } else {
-    AppLogger.w(
-      'Proxy enabled but no proxy address available (mode: $proxyMode)',
-      'NETWORK',
-    );
-  }
+  return ProxyService.getSystemProxyAddress();
 }
 
 Future<void> _openHiveBoxIfNeeded<E>(

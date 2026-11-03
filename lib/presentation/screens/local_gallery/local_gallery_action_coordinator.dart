@@ -844,7 +844,7 @@ class LocalGalleryActionCoordinator {
     try {
       final bytes = await _readExistingImage(record);
       if (bytes == null || !_mounted()) return;
-      KritaSendHelper.sendImageBytes(
+      await KritaSendHelper.sendImageBytes(
         _context(),
         _ref,
         bytes,

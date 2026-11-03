@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:dio/dio.dart';
 
+import '../database/database_error_summary.dart';
 import '../utils/app_logger.dart';
 import 'autocomplete_cache_database.dart';
 import 'completion_models.dart';
@@ -116,7 +117,7 @@ class DanbooruCompletionSource implements CompletionSource {
       _lastError = error.message ?? error.toString();
       _registerFailure();
       AppLogger.w(
-        'Danbooru autocomplete request failed: $error',
+        'Danbooru autocomplete request failed: ${_requestFailure(error)}',
         'Autocomplete',
       );
       AppLogger.d('$stack', 'Autocomplete');
@@ -124,7 +125,11 @@ class DanbooruCompletionSource implements CompletionSource {
     } catch (error, stack) {
       _lastError = error.toString();
       _registerFailure();
-      AppLogger.e('Danbooru autocomplete response failed', error, stack);
+      AppLogger.e(
+        'Danbooru autocomplete response failed',
+        databaseErrorSummary(error),
+        stack,
+      );
       return _staleCandidates(disk, now);
     } finally {
       if (identical(_cancelToken, cancelToken)) _cancelToken = null;
@@ -187,12 +192,14 @@ class DanbooruCompletionSource implements CompletionSource {
       if (CancelToken.isCancel(error)) return const [];
       _lastError = error.message ?? error.toString();
       _registerFailure();
-      AppLogger.w('Danbooru related tags failed: $error');
+      AppLogger.w('Danbooru related tags failed: ${_requestFailure(error)}');
       return _staleCandidates(disk, now);
     } catch (error) {
       _lastError = error.toString();
       _registerFailure();
-      AppLogger.w('Danbooru related tags failed: $error');
+      AppLogger.w(
+        'Danbooru related tags failed: ${databaseErrorSummary(error)}',
+      );
       return _staleCandidates(disk, now);
     } finally {
       if (identical(_cancelToken, cancelToken)) _cancelToken = null;
@@ -228,6 +235,10 @@ class DanbooruCompletionSource implements CompletionSource {
     }
     throw lastError!;
   }
+
+  // DioException 文本会附上底层 HttpException 的 uri，里面是正在输入的标签
+  static String _requestFailure(DioException error) =>
+      '${error.type.name}, status ${error.response?.statusCode}';
 
   Future<void> _waitForRateLimit() async {
     final previous = _lastRequestAt;

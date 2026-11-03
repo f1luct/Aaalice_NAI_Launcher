@@ -23,9 +23,11 @@ import '../../router/app_routes.dart';
 import '../../themes/theme_extension.dart';
 import '../auth/account_avatar.dart';
 import '../auth/login_form_container.dart';
+import '../auth/saved_account_token_reader.dart';
 import '../settings/account_profile_sheet.dart';
 
 import '../common/app_toast.dart';
+import '../common/menu_action_label.dart';
 
 Duration _boundedMotionDuration(
   BuildContext context,
@@ -1289,6 +1291,19 @@ class _AccountAvatarButtonState extends State<_AccountAvatarButton> {
         ? currentAccount
         : null;
 
+    Widget accountAction(
+      IconData icon,
+      String label, {
+      bool destructive = false,
+    }) => MenuActionLabel(
+      leading: Icon(icon),
+      label: label,
+      destructive: destructive,
+      iconColor: theme.colorScheme.onSurface,
+      iconSize: 20,
+      gap: 12,
+    );
+
     // 获取按钮的位置用于定位菜单
     final RenderBox button = context.findRenderObject() as RenderBox;
     final Offset offset = button.localToGlobal(Offset.zero);
@@ -1313,13 +1328,7 @@ class _AccountAvatarButtonState extends State<_AccountAvatarButton> {
         if (!authState.isAuthenticated)
           PopupMenuItem<String>(
             value: 'login',
-            child: Row(
-              children: [
-                Icon(Icons.login, color: theme.colorScheme.onSurface, size: 20),
-                const SizedBox(width: 12),
-                Text(context.l10n.auth_login),
-              ],
-            ),
+            child: accountAction(Icons.login, context.l10n.auth_login),
           ),
 
         // 当前账号标题
@@ -1366,29 +1375,16 @@ class _AccountAvatarButtonState extends State<_AccountAvatarButton> {
         if (authState.isAuthenticated)
           PopupMenuItem<String>(
             value: 'add',
-            child: Row(
-              children: [
-                Icon(Icons.add, color: theme.colorScheme.onSurface, size: 20),
-                const SizedBox(width: 12),
-                Text(context.l10n.auth_addAccount),
-              ],
-            ),
+            child: accountAction(Icons.add, context.l10n.auth_addAccount),
           ),
 
         if (menuCurrentAccount != null)
           PopupMenuItem<String>(
             key: const Key('main-nav-manage-accounts'),
             value: 'manage',
-            child: Row(
-              children: [
-                Icon(
-                  Icons.manage_accounts_outlined,
-                  color: theme.colorScheme.onSurface,
-                  size: 20,
-                ),
-                const SizedBox(width: 12),
-                Text(context.l10n.auth_manageAccounts),
-              ],
+            child: accountAction(
+              Icons.manage_accounts_outlined,
+              context.l10n.auth_manageAccounts,
             ),
           ),
 
@@ -1396,15 +1392,10 @@ class _AccountAvatarButtonState extends State<_AccountAvatarButton> {
         if (authState.isAuthenticated)
           PopupMenuItem<String>(
             value: 'logout',
-            child: Row(
-              children: [
-                Icon(Icons.logout, color: theme.colorScheme.error, size: 20),
-                const SizedBox(width: 12),
-                Text(
-                  context.l10n.auth_logout,
-                  style: TextStyle(color: theme.colorScheme.error),
-                ),
-              ],
+            child: accountAction(
+              Icons.logout,
+              context.l10n.auth_logout,
+              destructive: true,
             ),
           ),
       ],
@@ -1449,17 +1440,12 @@ class _AccountAvatarButtonState extends State<_AccountAvatarButton> {
     final accounts = widget.ref.read(accountManagerNotifierProvider).accounts;
     final account = accounts.firstWhere((a) => a.id == accountId);
 
-    // 获取 Token
-    final token = await widget.ref
-        .read(accountManagerNotifierProvider.notifier)
-        .getAccountToken(account.id);
-
-    if (token == null) {
-      if (mounted) {
-        AppToast.info(context, context.l10n.auth_tokenNotFound);
-      }
-      return;
-    }
+    final token = await readSavedAccountTokenForSwitch(
+      context: context,
+      ref: widget.ref,
+      account: account,
+    );
+    if (token == null) return;
 
     // 使用 switchAccount（根据账号类型选择验证方式）
     final success = await widget.ref
@@ -1502,6 +1488,9 @@ class _AccountAvatarButtonState extends State<_AccountAvatarButton> {
           case AuthErrorCode.serverError:
             errorMessage = context.l10n.auth_error_serverError;
             break;
+          case AuthErrorCode.secureStorageUnavailable:
+            errorMessage = context.l10n.common_secureStorageUnavailable;
+            break;
           default:
             errorMessage = context.l10n.auth_loginFailed;
         }
@@ -1522,6 +1511,7 @@ class _AccountAvatarButtonState extends State<_AccountAvatarButton> {
       context: context,
       title: context.l10n.auth_addAccount,
       dialogWidth: 450,
+      headerScrollsWithContent: true,
       builder: (panelContext, scrollController) => ContentSizedAdaptiveForm(
         scrollViewKey: const Key('main-nav-add-account-form'),
         scrollController: scrollController,

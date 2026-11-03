@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../../../../core/utils/localization_extension.dart';
 import '../core/editor_state.dart';
 import '../core/history_manager.dart';
+import '../core/mask_paint_style.dart';
 import 'color_picker_tool.dart';
 import 'tool_base.dart';
 import 'tool_setting_rows.dart';
@@ -46,6 +47,10 @@ class EraserTool extends EditorTool {
     _hardness = hardness.clamp(0.0, 1.0);
   }
 
+  /// 导出时残留的半透明像素仍算蒙版，软边擦不干净，蒙版层上固定硬边
+  double hardnessFor(EditorState state) =>
+      state.isMaskLayerActive ? MaskPaintStyle.hardness : _hardness;
+
   @override
   void onPointerDown(PointerDownEvent event, EditorState state) {
     // Alt 模式下不开始擦除，等待 pointerUp 取色
@@ -86,23 +91,27 @@ class EraserTool extends EditorTool {
     }
   }
 
+  /// 当前图层上由 [points] 构成的一笔，提交与涂抹中的实时擦除共用
+  StrokeData strokeFor(EditorState state, List<Offset> points) {
+    return StrokeData(
+      points: List.of(points),
+      size: _size,
+      color: Colors.transparent,
+      opacity: 1.0,
+      hardness: hardnessFor(state),
+      isEraser: true,
+    );
+  }
+
   /// 提交当前笔画（抽取公共逻辑，供 onPointerDown 和 onPointerUp 调用）
   void _commitCurrentStroke(EditorState state) {
     final activeLayer = state.layerManager.activeLayer;
     if (activeLayer != null && !activeLayer.locked) {
-      // 创建橡皮擦笔画数据
-      final stroke = StrokeData(
-        points: List.from(state.currentStrokePoints),
-        size: _size,
-        color: Colors.transparent,
-        opacity: 1.0,
-        hardness: _hardness,
-        isEraser: true,
-      );
-
-      // 执行添加笔画操作
       state.historyManager.execute(
-        AddStrokeAction(layerId: activeLayer.id, stroke: stroke),
+        AddStrokeAction(
+          layerId: activeLayer.id,
+          stroke: strokeFor(state, state.currentStrokePoints),
+        ),
         state,
       );
     }
@@ -122,21 +131,26 @@ class EraserTool extends EditorTool {
 
   @override
   Widget buildSettingsPanel(BuildContext context, EditorState state) {
-    return _EraserSettingsPanel(
-      tool: this,
-      onSettingsChanged: () {
-        state.requestUiUpdate();
-      },
+    // 切换图层时硬度一行随之显隐
+    return ValueListenableBuilder<String?>(
+      valueListenable: state.layerManager.activeLayerNotifier,
+      builder: (context, _, _) => _EraserSettingsPanel(
+        tool: this,
+        state: state,
+        onSettingsChanged: state.requestUiUpdate,
+      ),
     );
   }
 }
 
 class _EraserSettingsPanel extends StatefulWidget {
   final EraserTool tool;
+  final EditorState state;
   final VoidCallback onSettingsChanged;
 
   const _EraserSettingsPanel({
     required this.tool,
+    required this.state,
     required this.onSettingsChanged,
   });
 
@@ -198,20 +212,20 @@ class _EraserSettingsPanelState extends State<_EraserSettingsPanel> {
               },
             ),
 
-            // 硬度
-            ToolSettingRow.slider(
-              label: context.l10n.editor_hardness,
-              value: widget.tool.hardness * 100,
-              min: 0,
-              max: 100,
-              suffix: '%',
-              onChanged: (value) {
-                setState(() {
-                  widget.tool.setHardness(value / 100);
-                });
-                widget.onSettingsChanged();
-              },
-            ),
+            if (!widget.state.isMaskLayerActive)
+              ToolSettingRow.slider(
+                label: context.l10n.editor_hardness,
+                value: widget.tool.hardness * 100,
+                min: 0,
+                max: 100,
+                suffix: '%',
+                onChanged: (value) {
+                  setState(() {
+                    widget.tool.setHardness(value / 100);
+                  });
+                  widget.onSettingsChanged();
+                },
+              ),
           ],
         ),
       ],

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -422,6 +423,252 @@ void main() {
       expect(clipboardText, selectedText);
       expect(copiedPrompt, isFalse);
     },
+  );
+
+  testWidgets('切图后上一张晚到的元数据既不在加载时显示，也不覆盖当前图', (tester) async {
+    final slowRead = Completer<NaiImageMetadata?>();
+    final slow = FileImageDetailData(
+      filePath: _neverCreatedPath('slow'),
+      readCachedMetadata: (_) => slowRead.future,
+    );
+    final current = FileImageDetailData(
+      filePath: _neverCreatedPath('current'),
+      initialMetadata: const NaiImageMetadata(prompt: 'blue sky'),
+    );
+    final loadingText = lookupAppLocalizations(
+      const Locale('zh'),
+    ).detail_parsingMetadata;
+    unawaited(slow.prefetchMetadata());
+
+    await tester.pumpWidget(_panelApp(current));
+    expect(find.textContaining('blue sky'), findsWidgets);
+
+    await tester.pumpWidget(_panelApp(slow));
+    expect(find.text(loadingText), findsOneWidget);
+    expect(find.textContaining('blue sky'), findsNothing);
+
+    await tester.pumpWidget(_panelApp(current));
+    slowRead.complete(const NaiImageMetadata(prompt: 'red moon'));
+    await tester.pump();
+
+    expect(find.textContaining('blue sky'), findsWidgets);
+    expect(find.textContaining('red moon'), findsNothing);
+  });
+
+  testWidgets('解析结果为空时结束加载并显示无元数据', (tester) async {
+    final image = _PendingMetadataDetail('plain');
+    final l10n = lookupAppLocalizations(const Locale('zh'));
+
+    await tester.pumpWidget(_panelApp(image));
+    expect(find.text(l10n.detail_parsingMetadata), findsOneWidget);
+
+    image.metadataLoad.complete(null);
+    await tester.pump();
+
+    expect(find.text(l10n.detail_parsingMetadata), findsNothing);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.text(l10n.detail_noMetadata), findsOneWidget);
+  });
+
+  testWidgets('读取元数据失败时按无元数据收尾', (tester) async {
+    final image = _PendingMetadataDetail('locked');
+    final l10n = lookupAppLocalizations(const Locale('zh'));
+
+    await tester.pumpWidget(_panelApp(image));
+    image.metadataLoad.completeError(
+      const FileSystemException('locked', 'locked.png'),
+    );
+    await tester.pump();
+
+    expect(find.text(l10n.detail_parsingMetadata), findsNothing);
+    expect(find.text(l10n.detail_noMetadata), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('上一张晚到的空结果不会提前结束当前图的加载', (tester) async {
+    final previous = _PendingMetadataDetail('previous');
+    final current = _PendingMetadataDetail('current');
+    final l10n = lookupAppLocalizations(const Locale('zh'));
+
+    await tester.pumpWidget(_panelApp(previous));
+    await tester.pumpWidget(_panelApp(current));
+    previous.metadataLoad.complete(null);
+    await tester.pump();
+
+    expect(find.text(l10n.detail_parsingMetadata), findsOneWidget);
+    expect(find.text(l10n.detail_noMetadata), findsNothing);
+
+    current.metadataLoad.complete(const NaiImageMetadata(prompt: 'blue sky'));
+    await tester.pump();
+
+    expect(find.text(l10n.detail_parsingMetadata), findsNothing);
+    expect(find.textContaining('blue sky'), findsWidgets);
+  });
+
+  testWidgets('解析中与无元数据时都先显示文件基本信息', (tester) async {
+    final image = _PendingMetadataDetail(
+      'plain',
+      fileInfo: FileInfo(
+        path: _neverCreatedPath('plain'),
+        fileName: 'plain.png',
+        size: 2048,
+      ),
+    );
+    final l10n = lookupAppLocalizations(const Locale('zh'));
+
+    await tester.pumpWidget(_panelApp(image));
+    expect(find.text(l10n.detail_basicInfo), findsOneWidget);
+    expect(find.text('plain.png'), findsOneWidget);
+    expect(find.text(l10n.detail_parsingMetadata), findsOneWidget);
+
+    image.metadataLoad.complete(null);
+    await tester.pump();
+
+    expect(find.text('plain.png'), findsOneWidget);
+    expect(find.text('2.0 KB'), findsOneWidget);
+    expect(find.text(l10n.detail_noMetadata), findsOneWidget);
+    expect(find.text(l10n.gallery_generationParams), findsNothing);
+  });
+
+  testWidgets('无元数据时实际分辨率归入基本信息', (tester) async {
+    final image = _PendingMetadataDetail('memory');
+    final l10n = lookupAppLocalizations(const Locale('zh'));
+
+    await tester.pumpWidget(_panelApp(image));
+    image.metadataLoad.complete(null);
+    await tester.pump();
+
+    expect(find.text(l10n.detail_basicInfo), findsOneWidget);
+    expect(find.text(l10n.gallery_metaResolution), findsOneWidget);
+    expect(find.text('1 × 1'), findsOneWidget);
+    expect(find.text(l10n.detail_noMetadata), findsOneWidget);
+  });
+
+  testWidgets('有元数据时分辨率只出现在生成参数里', (tester) async {
+    final image = _PendingMetadataDetail('generated');
+    final l10n = lookupAppLocalizations(const Locale('zh'));
+
+    await tester.pumpWidget(_panelApp(image));
+    image.metadataLoad.complete(const NaiImageMetadata(prompt: 'blue sky'));
+    await tester.pump();
+
+    expect(find.text(l10n.gallery_generationParams), findsOneWidget);
+    expect(find.text(l10n.gallery_metaResolution), findsOneWidget);
+    expect(find.text('1 × 1'), findsOneWidget);
+    // 内存图没有文件信息，分辨率又归生成参数，基本信息整组不出现
+    expect(find.text(l10n.detail_basicInfo), findsNothing);
+  });
+
+  testWidgets('窄屏三倍字号下无元数据状态可滚动到底且不溢出', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(320, 480));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final image = _PendingMetadataDetail(
+      'scaled',
+      fileInfo: FileInfo(
+        path: _neverCreatedPath('scaled'),
+        fileName: 'a_long_generated_file_name_for_scale_check.png',
+        size: 4 * 1024 * 1024,
+      ),
+    );
+    final l10n = lookupAppLocalizations(const Locale('zh'));
+
+    await tester.pumpWidget(_panelApp(image, expandedWidth: 320, textScale: 3));
+    image.metadataLoad.complete(null);
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(
+      find.text('a_long_generated_file_name_for_scale_check.png'),
+      findsOneWidget,
+    );
+    await tester.scrollUntilVisible(
+      find.text(l10n.detail_noMetadata),
+      120,
+      scrollable: find
+          .descendant(
+            of: find.byType(CustomScrollView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    expect(find.text(l10n.detail_noMetadata), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+}
+
+final _onePixelPng = Uint8List.fromList(
+  img.encodePng(img.Image(width: 1, height: 1)),
+);
+
+class _PendingMetadataDetail extends ImageDetailData {
+  _PendingMetadataDetail(this.identifier, {this.fileInfo});
+
+  @override
+  final String identifier;
+
+  @override
+  final FileInfo? fileInfo;
+
+  final metadataLoad = Completer<NaiImageMetadata?>();
+
+  @override
+  Future<NaiImageMetadata?> getMetadataAsync() => metadataLoad.future;
+
+  @override
+  ImageProvider getImageProvider() => MemoryImage(_onePixelPng);
+
+  @override
+  Future<Uint8List> getImageBytes() async => _onePixelPng;
+
+  @override
+  NaiImageMetadata? get metadata => null;
+
+  @override
+  bool get isFavorite => false;
+
+  @override
+  bool get showSaveButton => false;
+
+  @override
+  bool get showCopyButton => false;
+
+  @override
+  bool get showSaveAsButton => false;
+
+  @override
+  bool get showFavoriteButton => false;
+
+  @override
+  bool get preserveOriginalBytesOnSave => false;
+}
+
+String _neverCreatedPath(String name) =>
+    '${Directory.systemTemp.path}${Platform.pathSeparator}'
+    'detail_panel_never_created_$name.png';
+
+Widget _panelApp(
+  ImageDetailData image, {
+  double expandedWidth = 600,
+  double textScale = 1,
+}) {
+  return ProviderScope(
+    child: MaterialApp(
+      locale: const Locale('zh'),
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(
+          context,
+        ).copyWith(textScaler: TextScaler.linear(textScale)),
+        child: child!,
+      ),
+      home: Scaffold(
+        body: DetailMetadataPanel(
+          currentImage: image,
+          expandedWidth: expandedWidth,
+        ),
+      ),
+    ),
   );
 }
 

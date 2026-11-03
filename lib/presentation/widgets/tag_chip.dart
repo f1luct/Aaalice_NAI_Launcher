@@ -18,8 +18,8 @@ class SimpleTagChip extends ConsumerStatefulWidget {
 
   /// 长按回调。
   ///
-  /// 偏离上游：上游只有 [onSecondaryTapUp]（右键），触屏没有右键，
-  /// 于是标签的「加入黑名单 / 输出过滤」菜单在 iOS 上完全不可达。
+  /// 触屏没有右键，只靠 [onSecondaryTapUp] 的话，标签的「加入黑名单 / 输出
+  /// 过滤」菜单在手机上不可达。
   /// 不传时自动复用 [onSecondaryTapUp]，把长按位置合成成同形状的
   /// [TapUpDetails] 交给同一个菜单回调——调用方不改也能在手机上用。
   final GestureLongPressStartCallback? onLongPressStart;

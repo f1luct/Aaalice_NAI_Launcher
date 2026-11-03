@@ -5,6 +5,7 @@ import 'dart:ui';
 import 'package:image/image.dart' as img;
 
 import '../models/image_generation_artifact.dart';
+import 'exif_orientation.dart';
 import 'inpaint_mask_utils.dart';
 import 'isolate_pool.dart';
 import 'pica_lanczos_resizer.dart';
@@ -63,6 +64,19 @@ class FocusedInpaintGeometry extends FocusedInpaintFrame {
 
   bool get isUpscaled =>
       requestMode == FocusedInpaintRequestMode.upscaleToTarget;
+}
+
+/// 蒙版自身尺寸与其外接矩形，"仅蒙版"聚焦重绘的几何只由这两项决定。
+class FocusedInpaintMaskExtent {
+  const FocusedInpaintMaskExtent({
+    required this.maskWidth,
+    required this.maskHeight,
+    required this.bounds,
+  });
+
+  final int maskWidth;
+  final int maskHeight;
+  final FocusedInpaintCrop bounds;
 }
 
 class FocusedInpaintRequest {
@@ -287,102 +301,8 @@ class FocusedInpaintUtils {
     )?.focusBounds.rect;
   }
 
-  static FocusedInpaintCrop? resolvePreviewCrop({
-    required Uint8List sourceImage,
-    Uint8List? maskImage,
-    Rect? focusedSelectionRect,
-    required double minContextMegaPixels,
-  }) {
-    return resolvePreviewFrame(
-      sourceImage: sourceImage,
-      maskImage: maskImage,
-      focusedSelectionRect: focusedSelectionRect,
-      minContextMegaPixels: minContextMegaPixels,
-    )?.contextCrop;
-  }
-
-  static FocusedInpaintFrame? resolvePreviewFrame({
-    required Uint8List sourceImage,
-    Uint8List? maskImage,
-    Rect? focusedSelectionRect,
-    required double minContextMegaPixels,
-  }) {
-    final decodedSource = img.decodeImage(sourceImage);
-    if (decodedSource == null) {
-      return null;
-    }
-
-    final maskBounds = _resolveMaskBounds(maskImage);
-    final focusRect = focusedSelectionRect ?? maskBounds?.rect;
-    if (focusRect == null) {
-      return null;
-    }
-
-    return resolveGeometryForSelection(
-      sourceWidth: decodedSource.width,
-      sourceHeight: decodedSource.height,
-      selectionRect: focusRect,
-      minContextMegaPixels: minContextMegaPixels,
-    );
-  }
-
-  static FocusedInpaintCrop? resolveContextCropForSelection({
-    required int sourceWidth,
-    required int sourceHeight,
-    required Rect selectionRect,
-    required double minContextMegaPixels,
-  }) {
-    return resolveGeometryForSelection(
-      sourceWidth: sourceWidth,
-      sourceHeight: sourceHeight,
-      selectionRect: selectionRect,
-      minContextMegaPixels: minContextMegaPixels,
-    )?.contextCrop;
-  }
-
-  static FocusedInpaintFrame? resolvePreviewFrameForSelection({
-    required int sourceWidth,
-    required int sourceHeight,
-    required Rect selectionRect,
-    required double minContextMegaPixels,
-  }) {
-    return resolveGeometryForSelection(
-      sourceWidth: sourceWidth,
-      sourceHeight: sourceHeight,
-      selectionRect: selectionRect,
-      minContextMegaPixels: minContextMegaPixels,
-    );
-  }
-
-  static (int, int)? resolveRequestSizeForSelection({
-    required int sourceWidth,
-    required int sourceHeight,
-    required Rect selectionRect,
-    required double minContextMegaPixels,
-  }) {
-    final geometry = resolveGeometryForSelection(
-      sourceWidth: sourceWidth,
-      sourceHeight: sourceHeight,
-      selectionRect: selectionRect,
-      minContextMegaPixels: minContextMegaPixels,
-    );
-    if (geometry == null) {
-      return null;
-    }
-
-    return (geometry.requestWidth, geometry.requestHeight);
-  }
-
-  /// 仅根据蒙版字节计算聚焦重绘请求尺寸的轻量路径。
-  ///
-  /// 目标尺寸只由蒙版外接矩形决定，与蒙版内部形状无关，因此这里
-  /// 不做 [prepareRequest] 中的裁剪、缩放和 PNG 编码，结果与其
-  /// targetWidth/targetHeight 一致。蒙版默认与源图同尺寸（重绘
-  /// 流程的既有约定），外接矩形按蒙版自身宽高收敛。
-  static FocusedInpaintGeometry? resolveGeometryForMask({
-    required Uint8List maskImage,
-    required double minContextMegaPixels,
-  }) {
+  /// 解码蒙版并求外接矩形；无法解码或蒙版为空时返回 null。
+  static FocusedInpaintMaskExtent? resolveMaskExtent(Uint8List maskImage) {
     final binaryMask = InpaintMaskUtils.decodeBinaryMask(maskImage);
     if (binaryMask == null) {
       return null;
@@ -397,27 +317,95 @@ class FocusedInpaintUtils {
       return null;
     }
 
+    return FocusedInpaintMaskExtent(
+      maskWidth: binaryMask.width,
+      maskHeight: binaryMask.height,
+      bounds: bounds,
+    );
+  }
+
+  static Future<FocusedInpaintMaskExtent?> resolveMaskExtentAsync(
+    Uint8List maskImage,
+  ) {
+    return ComputeGate().runIsolate(() => resolveMaskExtent(maskImage));
+  }
+
+  /// 目标尺寸只由蒙版外接矩形决定，与蒙版内部形状无关，结果与
+  /// [prepareRequest] 的 targetWidth/targetHeight 一致。蒙版默认与源图
+  /// 同尺寸（重绘流程的既有约定），外接矩形按蒙版自身宽高收敛。
+  static FocusedInpaintGeometry? resolveGeometryForMaskExtent(
+    FocusedInpaintMaskExtent extent, {
+    required double minContextMegaPixels,
+  }) {
     return resolveGeometryForSelection(
-      sourceWidth: binaryMask.width,
-      sourceHeight: binaryMask.height,
-      selectionRect: bounds.rect,
+      sourceWidth: extent.maskWidth,
+      sourceHeight: extent.maskHeight,
+      selectionRect: extent.bounds.rect,
       minContextMegaPixels: minContextMegaPixels,
     );
   }
 
-  static (int, int)? resolveRequestSizeForMask({
+  /// 仅根据蒙版字节计算聚焦重绘请求尺寸的轻量路径，不做 [prepareRequest]
+  /// 中的裁剪、缩放和 PNG 编码。
+  static FocusedInpaintGeometry? resolveGeometryForMask({
     required Uint8List maskImage,
     required double minContextMegaPixels,
   }) {
-    final geometry = resolveGeometryForMask(
-      maskImage: maskImage,
-      minContextMegaPixels: minContextMegaPixels,
-    );
-    if (geometry == null) {
+    final extent = resolveMaskExtent(maskImage);
+    if (extent == null) {
       return null;
     }
 
-    return (geometry.requestWidth, geometry.requestHeight);
+    return resolveGeometryForMaskExtent(
+      extent,
+      minContextMegaPixels: minContextMegaPixels,
+    );
+  }
+
+  static Future<FocusedInpaintGeometry?> resolveGeometryForMaskAsync({
+    required Uint8List maskImage,
+    required double minContextMegaPixels,
+  }) {
+    return ComputeGate().runIsolate(
+      () => resolveGeometryForMask(
+        maskImage: maskImage,
+        minContextMegaPixels: minContextMegaPixels,
+      ),
+    );
+  }
+
+  /// [prepareRequest] 将采用的请求几何，只解码不做裁剪、缩放与编码；
+  /// 返回 null 时执行端不会发出聚焦重绘请求。
+  static FocusedInpaintGeometry? resolveRequestGeometry({
+    required Uint8List sourceImage,
+    required Uint8List maskImage,
+    Rect? focusedSelectionRect,
+    Rect? contextCrop,
+    required double minContextMegaPixels,
+  }) => _resolveFocusedContext(
+    sourceImage: sourceImage,
+    maskImage: maskImage,
+    focusedSelectionRect: focusedSelectionRect,
+    contextCrop: contextCrop,
+    minContextMegaPixels: minContextMegaPixels,
+  )?.geometry;
+
+  static Future<FocusedInpaintGeometry?> resolveRequestGeometryAsync({
+    required Uint8List sourceImage,
+    required Uint8List maskImage,
+    Rect? focusedSelectionRect,
+    Rect? contextCrop,
+    required double minContextMegaPixels,
+  }) {
+    return ComputeGate().runIsolate(
+      () => resolveRequestGeometry(
+        sourceImage: sourceImage,
+        maskImage: maskImage,
+        focusedSelectionRect: focusedSelectionRect,
+        contextCrop: contextCrop,
+        minContextMegaPixels: minContextMegaPixels,
+      ),
+    );
   }
 
   /// [contextCrop] 给定时按它原样裁切（取景框），不再从选区或蒙版推导上下文
@@ -507,7 +495,7 @@ class FocusedInpaintUtils {
     Rect? contextCrop,
     required double minContextMegaPixels,
   }) {
-    final decodedSource = img.decodeImage(sourceImage);
+    final decodedSource = ExifOrientation.decodeUpright(sourceImage);
     if (decodedSource == null) {
       return null;
     }
@@ -638,23 +626,6 @@ class FocusedInpaintUtils {
       y: minY,
       width: maxX - minX + 1,
       height: maxY - minY + 1,
-    );
-  }
-
-  static FocusedInpaintCrop? _resolveMaskBounds(Uint8List? maskImage) {
-    if (maskImage == null) {
-      return null;
-    }
-
-    final binaryMask = InpaintMaskUtils.decodeBinaryMask(maskImage);
-    if (binaryMask == null) {
-      return null;
-    }
-
-    return _findBinaryMaskBounds(
-      binaryMask.mask,
-      binaryMask.width,
-      binaryMask.height,
     );
   }
 

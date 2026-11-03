@@ -10,12 +10,14 @@ import '../../../../data/models/fixed_tag/fixed_tag_prompt_type.dart';
 import '../../../../data/models/tag_library/tag_library_category.dart';
 import '../../../../data/models/tag_library/tag_library_entry.dart';
 import '../../../providers/fixed_tags_provider.dart';
+import '../../../providers/fixed_tags_viewport_memory_provider.dart';
 import '../../../providers/layout_state_provider.dart';
 import '../../../providers/tag_library_page_provider.dart';
 import '../../../../core/utils/localization_extension.dart';
 import '../../../adaptive/interaction_policy.dart';
 import '../../../themes/core/layered_surface_style.dart';
 import '../../../widgets/common/app_toast.dart';
+import '../../../widgets/common/owned_scroll_controller.dart';
 import '../../../widgets/common/themed_confirm_dialog.dart';
 import '../../../widgets/common/tile_action_button.dart';
 import '../../../widgets/prompt/fixed_tag_edit_dialog.dart';
@@ -68,7 +70,7 @@ double _gridCardHeight(BuildContext context) {
   final scaledLabelSize = MediaQuery.textScalerOf(context).scale(14);
   // 底行取链接锚点与操作按钮中较高者：前者看有无精确指针，后者看有无触摸，两条规则会错配。
   final footerExtent = math.max(
-    context.interactionPolicy.precisePointerAvailable ? 24.0 : 44.0,
+    SidebarEntryTile.linkAnchorExtentOf(context),
     TileActionButton.extentOf(context),
   );
   // 带缩略图的卡片最紧：正文只有一行，但正文区仅分到卡片 5/8 高度，按它标定基准。
@@ -90,11 +92,17 @@ class FixedTagsSidebar extends ConsumerStatefulWidget {
 
 class _FixedTagsSidebarState extends ConsumerState<FixedTagsSidebar> {
   final _searchController = TextEditingController();
-  final _positiveScrollController = ScrollController();
-  final _negativeScrollController = ScrollController();
+  late final FixedTagsViewportMemory _viewportMemory;
+  late final OwnedScrollController _positiveScrollController;
+  late final OwnedScrollController _negativeScrollController;
+  // 筛选结果从顶部开始，也不覆盖完整列表的浏览位置。
+  final _positiveFilteredScrollController = ScrollController();
+  final _negativeFilteredScrollController = ScrollController();
   final _positiveGroupsKey = GlobalKey<_GroupedFixedTagCollectionState>();
   final _negativeGroupsKey = GlobalKey<_GroupedFixedTagCollectionState>();
   final _linkLayerKey = GlobalKey();
+  // 首次触屏按下就会让顶栏操作换到第二行，换父节点也要保住按钮的手势识别器。
+  final _headerActionsKey = GlobalKey();
   final _positiveAnchorKeys = <String, GlobalKey>{};
   final _negativeAnchorKeys = <String, GlobalKey>{};
 
@@ -112,8 +120,22 @@ class _FixedTagsSidebarState extends ConsumerState<FixedTagsSidebar> {
   @override
   void initState() {
     super.initState();
-    _positiveScrollController.addListener(_scheduleLinkRepaint);
-    _negativeScrollController.addListener(_scheduleLinkRepaint);
+    _viewportMemory = ref.read(fixedTagsViewportMemoryProvider);
+    _positiveScrollController = OwnedScrollController(
+      viewport: _viewportMemory.browseViewport(
+        FixedTagsSurface.sidebar,
+        FixedTagPromptType.positive,
+      ),
+    );
+    _negativeScrollController = OwnedScrollController(
+      viewport: _viewportMemory.browseViewport(
+        FixedTagsSurface.sidebar,
+        FixedTagPromptType.negative,
+      ),
+    );
+    for (final controller in _listControllers) {
+      controller.addListener(_scheduleLinkRepaint);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       ref.read(fixedTagsNotifierProvider.notifier).inferCategoriesFromLibrary();
@@ -124,9 +146,38 @@ class _FixedTagsSidebarState extends ConsumerState<FixedTagsSidebar> {
   @override
   void dispose() {
     _searchController.dispose();
-    _positiveScrollController.dispose();
-    _negativeScrollController.dispose();
+    for (final controller in _listControllers) {
+      controller.dispose();
+    }
     super.dispose();
+  }
+
+  List<ScrollController> get _listControllers => [
+    _positiveScrollController,
+    _negativeScrollController,
+    _positiveFilteredScrollController,
+    _negativeFilteredScrollController,
+  ];
+
+  bool _isFiltered(FixedTagPromptType promptType) =>
+      _searchQuery.trim().isNotEmpty ||
+      switch (promptType) {
+        FixedTagPromptType.positive => _showOnlyEnabledPositive,
+        FixedTagPromptType.negative => _showOnlyEnabledNegative,
+      };
+
+  ScrollController _listControllerFor(FixedTagPromptType promptType) {
+    final filtered = _isFiltered(promptType);
+    return switch (promptType) {
+      FixedTagPromptType.positive =>
+        filtered
+            ? _positiveFilteredScrollController
+            : _positiveScrollController,
+      FixedTagPromptType.negative =>
+        filtered
+            ? _negativeFilteredScrollController
+            : _negativeScrollController,
+    };
   }
 
   @override
@@ -225,104 +276,156 @@ class _FixedTagsSidebarState extends ConsumerState<FixedTagsSidebar> {
     FixedTagsState fixedState,
     bool isListMode,
   ) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 10, 8, 8),
-      child: Row(
+    const iconSize = 18.0;
+    const iconGap = 8.0;
+    const minimumTitleGlyphs = 5;
+    final title = Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            Icons.push_pin_rounded,
-            size: 18,
-            color: theme.colorScheme.secondary,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  context.l10n.fixedTags_sidebarTitle,
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                Text(
-                  context.l10n.fixedTags_enabledCount(
-                    fixedState.enabledCount + fixedState.negativeEnabledCount,
-                    fixedState.entries.length,
-                  ),
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
+          Text(
+            context.l10n.fixedTags_sidebarTitle,
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w800,
             ),
           ),
-          IconButton(
-            tooltip: isListMode
-                ? context.l10n.fixedTags_switchGridView
-                : context.l10n.fixedTags_switchListView,
-            icon: Icon(
-              isListMode ? Icons.grid_view_rounded : Icons.view_agenda_outlined,
-              size: 18,
+          Text(
+            context.l10n.fixedTags_enabledCount(
+              fixedState.enabledCount + fixedState.negativeEnabledCount,
+              fixedState.entries.length,
             ),
-            onPressed: () {
-              ref
-                  .read(layoutStateNotifierProvider.notifier)
-                  .setFixedTagsSidebarViewMode(isListMode ? 'grid' : 'list');
-            },
-          ),
-          PopupMenuButton<_AddAction>(
-            tooltip: context.l10n.fixedTags_add,
-            icon: const Icon(Icons.add_rounded, size: 20),
-            onSelected: (action) {
-              switch (action) {
-                case _AddAction.positive:
-                  _addEntry();
-                  break;
-                case _AddAction.negative:
-                  _addEntry(promptType: FixedTagPromptType.negative);
-                  break;
-                case _AddAction.libraryPositive:
-                  _addFromLibrary(FixedTagPromptType.positive);
-                  break;
-                case _AddAction.libraryNegative:
-                  _addFromLibrary(FixedTagPromptType.negative);
-                  break;
-              }
-            },
-            itemBuilder: (context) => [
-              PopupMenuItem(
-                value: _AddAction.positive,
-                child: Text(context.l10n.fixedTags_addPositive),
-              ),
-              PopupMenuItem(
-                value: _AddAction.negative,
-                child: Text(context.l10n.fixedTags_addNegative),
-              ),
-              const PopupMenuDivider(),
-              PopupMenuItem(
-                value: _AddAction.libraryPositive,
-                child: Text(context.l10n.fixedTags_addPositiveFromLibrary),
-              ),
-              PopupMenuItem(
-                value: _AddAction.libraryNegative,
-                child: Text(context.l10n.fixedTags_addNegativeFromLibrary),
-              ),
-            ],
-          ),
-          IconButton(
-            key: const ValueKey('fixed-tags-collapse-sidebar'),
-            tooltip: context.l10n.nav_collapseSidebar,
-            icon: const Icon(Icons.chevron_left_rounded, size: 20),
-            onPressed: () {
-              ref
-                  .read(layoutStateNotifierProvider.notifier)
-                  .setFixedTagsSidebarExpanded(false);
-            },
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
         ],
       ),
     );
+    final leading = [
+      Icon(
+        Icons.push_pin_rounded,
+        size: iconSize,
+        color: theme.colorScheme.secondary,
+      ),
+      const SizedBox(width: iconGap),
+    ];
+    final actions = _buildHeaderActions(isListMode);
+    final actionGroup = Row(
+      key: _headerActionsKey,
+      mainAxisSize: MainAxisSize.min,
+      children: actions,
+    );
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 8, 8),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final titleWidth =
+              constraints.maxWidth -
+              iconSize -
+              iconGap -
+              actions.length * context.interactionPolicy.minimumControlExtent;
+          final glyphWidth = MediaQuery.textScalerOf(
+            context,
+          ).scale(theme.textTheme.titleSmall?.fontSize ?? 14);
+          // 标题放不下几个字时操作整体换到第二行，否则标题会被逐字折行。
+          if (titleWidth >= glyphWidth * minimumTitleGlyphs) {
+            return Row(children: [...leading, title, actionGroup]);
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(children: [...leading, title]),
+              Align(alignment: Alignment.centerRight, child: actionGroup),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  // 显式定尺寸，换行判断才能按交互策略算出操作组宽度，不受主题密度和点击区补齐影响。
+  ButtonStyle _headerActionStyle() {
+    final extent = context.interactionPolicy.minimumControlExtent;
+    return IconButton.styleFrom(
+      minimumSize: Size.square(extent),
+      maximumSize: Size.square(extent),
+      padding: EdgeInsets.zero,
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      visualDensity: VisualDensity.standard,
+    );
+  }
+
+  List<Widget> _buildHeaderActions(bool isListMode) {
+    final style = _headerActionStyle();
+    return [
+      IconButton(
+        tooltip: isListMode
+            ? context.l10n.fixedTags_switchGridView
+            : context.l10n.fixedTags_switchListView,
+        style: style,
+        icon: Icon(
+          isListMode ? Icons.grid_view_rounded : Icons.view_agenda_outlined,
+          size: 18,
+        ),
+        onPressed: () {
+          ref
+              .read(layoutStateNotifierProvider.notifier)
+              .setFixedTagsSidebarViewMode(isListMode ? 'grid' : 'list');
+        },
+      ),
+      PopupMenuButton<_AddAction>(
+        tooltip: context.l10n.fixedTags_add,
+        style: style,
+        icon: const Icon(Icons.add_rounded, size: 20),
+        onSelected: (action) {
+          switch (action) {
+            case _AddAction.positive:
+              _addEntry();
+              break;
+            case _AddAction.negative:
+              _addEntry(promptType: FixedTagPromptType.negative);
+              break;
+            case _AddAction.libraryPositive:
+              _addFromLibrary(FixedTagPromptType.positive);
+              break;
+            case _AddAction.libraryNegative:
+              _addFromLibrary(FixedTagPromptType.negative);
+              break;
+          }
+        },
+        itemBuilder: (context) => [
+          PopupMenuItem(
+            value: _AddAction.positive,
+            child: Text(context.l10n.fixedTags_addPositive),
+          ),
+          PopupMenuItem(
+            value: _AddAction.negative,
+            child: Text(context.l10n.fixedTags_addNegative),
+          ),
+          const PopupMenuDivider(),
+          PopupMenuItem(
+            value: _AddAction.libraryPositive,
+            child: Text(context.l10n.fixedTags_addPositiveFromLibrary),
+          ),
+          PopupMenuItem(
+            value: _AddAction.libraryNegative,
+            child: Text(context.l10n.fixedTags_addNegativeFromLibrary),
+          ),
+        ],
+      ),
+      IconButton(
+        key: const ValueKey('fixed-tags-collapse-sidebar'),
+        tooltip: context.l10n.nav_collapseSidebar,
+        style: style,
+        icon: const Icon(Icons.chevron_left_rounded, size: 20),
+        onPressed: () {
+          ref
+              .read(layoutStateNotifierProvider.notifier)
+              .setFixedTagsSidebarExpanded(false);
+        },
+      ),
+    ];
   }
 
   Widget _buildSearchBar(ThemeData theme) {
@@ -507,7 +610,16 @@ class _FixedTagsSidebarState extends ConsumerState<FixedTagsSidebar> {
         sections: sections,
         isListMode: isListMode,
         forceExpanded: _searchQuery.trim().isNotEmpty,
-        controller: _positiveScrollController,
+        filtered: _isFiltered(FixedTagPromptType.positive),
+        controller: _listControllerFor(FixedTagPromptType.positive),
+        initialCollapsedSectionIds: _viewportMemory.collapsedSidebarSections(
+          FixedTagPromptType.positive,
+        ),
+        onCollapsedSectionsChanged: (sectionIds) =>
+            _viewportMemory.rememberCollapsedSidebarSections(
+              FixedTagPromptType.positive,
+              sectionIds,
+            ),
         emptyText: _searchQuery.isNotEmpty
             ? context.l10n.fixedTags_noMatchingEnabled
             : _showOnlyEnabledPositive
@@ -799,7 +911,16 @@ class _FixedTagsSidebarState extends ConsumerState<FixedTagsSidebar> {
         sections: sections,
         isListMode: isListMode,
         forceExpanded: _searchQuery.trim().isNotEmpty,
-        controller: _negativeScrollController,
+        filtered: _isFiltered(FixedTagPromptType.negative),
+        controller: _listControllerFor(FixedTagPromptType.negative),
+        initialCollapsedSectionIds: _viewportMemory.collapsedSidebarSections(
+          FixedTagPromptType.negative,
+        ),
+        onCollapsedSectionsChanged: (sectionIds) =>
+            _viewportMemory.rememberCollapsedSidebarSections(
+              FixedTagPromptType.negative,
+              sectionIds,
+            ),
         emptyText: _searchQuery.isNotEmpty
             ? context.l10n.fixedTags_noMatchingNegative
             : _showOnlyEnabledNegative
@@ -873,9 +994,7 @@ class _FixedTagsSidebarState extends ConsumerState<FixedTagsSidebar> {
         categoryColor: categoryColor,
         isListMode: true,
         linkAnchor: SizedBox.square(
-          dimension: context.interactionPolicy.precisePointerAvailable
-              ? 24
-              : 44,
+          dimension: SidebarEntryTile.linkAnchorExtentOf(context),
         ),
         onToggle: _noop,
         onEdit: _noop,
@@ -888,9 +1007,7 @@ class _FixedTagsSidebarState extends ConsumerState<FixedTagsSidebar> {
 
   Widget _buildLinkAnchor(FixedTagEntry entry) {
     final theme = Theme.of(context);
-    final anchorExtent = context.interactionPolicy.precisePointerAvailable
-        ? 24.0
-        : 44.0;
+    final anchorExtent = SidebarEntryTile.linkAnchorExtentOf(context);
     final state = ref.watch(fixedTagsNotifierProvider);
     final linkedPositiveIds = entry.promptType == FixedTagPromptType.negative
         ? state.linkedPositivesOf(entry.id).map((linked) => linked.id).toList()
@@ -1162,6 +1279,7 @@ class _FixedTagsSidebarState extends ConsumerState<FixedTagsSidebar> {
           position: result.position,
           enabled: result.enabled,
           promptType: result.promptType,
+          sourceEntryId: result.sourceEntryId,
           categoryId: result.categoryId,
         );
   }
@@ -1363,7 +1481,10 @@ class _GroupedFixedTagCollection extends StatefulWidget {
     required this.sections,
     required this.isListMode,
     required this.forceExpanded,
+    required this.filtered,
     required this.controller,
+    required this.initialCollapsedSectionIds,
+    required this.onCollapsedSectionsChanged,
     required this.emptyText,
     required this.listPrototypeBuilder,
     required this.entryBuilder,
@@ -1375,7 +1496,10 @@ class _GroupedFixedTagCollection extends StatefulWidget {
   final List<_TagSection> sections;
   final bool isListMode;
   final bool forceExpanded;
+  final bool filtered;
   final ScrollController controller;
+  final Set<String> initialCollapsedSectionIds;
+  final ValueChanged<Set<String>> onCollapsedSectionsChanged;
   final String emptyText;
   final _FixedTagListPrototypeBuilder listPrototypeBuilder;
   final _FixedTagGroupEntryBuilder entryBuilder;
@@ -1389,15 +1513,28 @@ class _GroupedFixedTagCollection extends StatefulWidget {
 
 class _GroupedFixedTagCollectionState
     extends State<_GroupedFixedTagCollection> {
-  final _collapsedSectionIds = <String>{};
+  late final Set<String> _collapsedSectionIds;
   // 条目在重排后会换 index，索引无关的 key 才能让 tile 的 hover 与动画状态跟着条目走。
   final _entryItemKeys = <String, GlobalKey>{};
 
   @override
+  void initState() {
+    super.initState();
+    _collapsedSectionIds = {...widget.initialCollapsedSectionIds};
+  }
+
+  @override
   void didUpdateWidget(covariant _GroupedFixedTagCollection oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final availableIds = widget.sections.map((section) => section.id).toSet();
-    _collapsedSectionIds.removeWhere((id) => !availableIds.contains(id));
+    // 筛选只是暂时藏起分组，此时清理会丢掉完整列表的折叠状态。
+    if (!widget.filtered) {
+      final availableIds = widget.sections.map((section) => section.id).toSet();
+      final collapsedCount = _collapsedSectionIds.length;
+      _collapsedSectionIds.removeWhere((id) => !availableIds.contains(id));
+      if (_collapsedSectionIds.length != collapsedCount) {
+        _rememberCollapsedSections();
+      }
+    }
     final entryIds = <String>{
       for (final section in widget.sections)
         for (final entry in section.entries) entry.id,
@@ -1413,6 +1550,7 @@ class _GroupedFixedTagCollectionState
         _collapsedSectionIds.remove(sectionId);
       }
     });
+    _rememberCollapsedSections();
     widget.onVisibilityChanged();
   }
 
@@ -1426,8 +1564,12 @@ class _GroupedFixedTagCollectionState
         _collapsedSectionIds.clear();
       }
     });
+    _rememberCollapsedSections();
     widget.onVisibilityChanged();
   }
+
+  void _rememberCollapsedSections() =>
+      widget.onCollapsedSectionsChanged(_collapsedSectionIds);
 
   @override
   Widget build(BuildContext context) {
@@ -1447,8 +1589,13 @@ class _GroupedFixedTagCollectionState
       );
     }
 
+    // 同一 Scrollable 换 controller 会带走旧像素，筛选视图必须另起一个。
     return CustomScrollView(
-      key: ValueKey('${widget.keyPrefix}-group-list'),
+      key: ValueKey(
+        widget.filtered
+            ? '${widget.keyPrefix}-filtered-group-list'
+            : '${widget.keyPrefix}-group-list',
+      ),
       controller: widget.controller,
       slivers: [
         SliverPadding(
@@ -1598,7 +1745,11 @@ class _GroupedFixedTagCollectionState
       builder: (context, constraints) {
         const spacing = 7.0;
         final largeText = MediaQuery.textScalerOf(context).scale(14) >= 20;
-        final minimumCardWidth = largeText ? 220.0 : 140.0;
+        // 触屏下底行操作变宽，列宽按底行需求兜底，只有单列仍放不下时才收进更多菜单。
+        final minimumCardWidth = math.max(
+          largeText ? 220.0 : 140.0,
+          SidebarEntryTile.minimumCardWidthOf(context),
+        );
         final columnCount =
             ((constraints.crossAxisExtent + spacing) /
                     (minimumCardWidth + spacing))

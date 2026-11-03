@@ -11,12 +11,16 @@ import '../layers/layer_role.dart';
 import '../tools/tool_base.dart';
 import '../tools/brush_tool.dart';
 import '../tools/eraser_tool.dart';
+import '../tools/move_tool.dart';
 import 'canvas_controller.dart';
 import 'color_manager.dart';
+import 'editor_tool_groups.dart';
+import 'editor_toolbar_slot_memory.dart';
 import 'history_manager.dart';
 import 'layer_commands.dart';
 import 'layer_move_controller.dart';
 import 'layer_role_policy.dart';
+import 'layer_transform_controller.dart';
 import 'mask_paint_style.dart';
 import 'pixel_readback_queue.dart';
 import 'selection_manager.dart';
@@ -67,8 +71,17 @@ class EditorState extends ChangeNotifier {
   /// 移动工具的拖动与微移
   late final LayerMoveController layerMover = LayerMoveController(this);
 
+  LayerTransformController? _layerTransformer;
+
+  /// 移动工具上的自由变换
+  LayerTransformController get layerTransformer =>
+      _layerTransformer ??= LayerTransformController(this);
+
   /// 填充等需要先回读像素的编辑；导出与撤销前须等它清空
   final PixelReadbackQueue pixelReadbacks = PixelReadbackQueue();
+
+  /// 桌面与移动工具栏会随断点互换，折叠按钮的记忆放在这里才不丢
+  final EditorToolbarSlotMemory toolbarSlotMemory = EditorToolbarSlotMemory();
 
   LayerRolePolicy _rolePolicy = const LayerRolePolicy.disabled();
   LayerRolePolicy get rolePolicy => _rolePolicy;
@@ -228,6 +241,26 @@ class EditorState extends ChangeNotifier {
   List<Offset> get currentStrokePoints => strokeManager.currentStrokePoints;
   bool get isDrawing => strokeManager.isDrawing;
 
+  /// 这一笔由图层绘制器直接画进当前图层：蒙版上的画笔与已有蒙版重叠处同色，
+  /// 橡皮擦只擦本层像素且涂抹中即可看到结果
+  bool get isPaintingIntoLayer {
+    if (!isDrawing || currentStrokePoints.isEmpty) return false;
+    final tool = currentTool;
+    return tool is EraserTool || (tool is BrushTool && isMaskLayerActive);
+  }
+
+  /// 锁定的图层不接受笔画，涂抹中也不显示
+  StrokeData? get liveLayerStroke {
+    if (!isPaintingIntoLayer || layerManager.activeLayer?.locked != false) {
+      return null;
+    }
+    return switch (currentTool) {
+      final BrushTool brush => brush.strokeFor(this, currentStrokePoints),
+      final EraserTool eraser => eraser.strokeFor(this, currentStrokePoints),
+      _ => null,
+    };
+  }
+
   // ===== 构造函数 =====
 
   EditorState() {
@@ -251,7 +284,13 @@ class EditorState extends ChangeNotifier {
 
     // 笔画变化 → 触发渲染
     strokeManager.addListener(_onStrokeChanged);
+
+    // 换图层会让随角色变化的工具换到另一组
+    toolManager.toolNotifier.addListener(_rememberToolbarSlot);
+    layerManager.activeLayerNotifier.addListener(_rememberToolbarSlot);
   }
+
+  void _rememberToolbarSlot() => rememberSelectedToolSlot(this);
 
   // ===== 代理方法：工具 =====
 
@@ -279,6 +318,14 @@ class EditorState extends ChangeNotifier {
     if (tool != null) {
       setTool(tool);
     }
+  }
+
+  /// 切到移动工具并进入自由变换；没有可变换的内容时返回 false
+  bool beginFreeTransform() {
+    final move = toolManager.getToolById(MoveTool.toolId);
+    if (move == null || !move.isAvailableIn(this)) return false;
+    setTool(move);
+    return layerTransformer.begin();
   }
 
   /// 切回上一个工具
@@ -365,7 +412,6 @@ class EditorState extends ChangeNotifier {
     _flushPendingStrokePreviewChange();
     strokeManager.endStroke();
     _notifyStrokePreviewChange();
-    _updateActiveLayerCacheIfNeeded();
     // 笔画完成后异步预热快照，供拾色器使用
     _scheduleSnapshotUpdate();
   }
@@ -709,15 +755,6 @@ class EditorState extends ChangeNotifier {
     }
   }
 
-  Future<void> _updateActiveLayerCacheIfNeeded() async {
-    final layer = layerManager.activeLayer;
-    if (layer != null && layer.shouldRasterizeNow()) {
-      await layer.rasterize();
-      await layer.updateCompositeCache();
-      _notifyRenderChange();
-    }
-  }
-
   /// 延迟更新快照（下一帧异步执行）
   /// 用于笔画完成后预热拾色器快照
   void _scheduleSnapshotUpdate() {
@@ -759,6 +796,7 @@ class EditorState extends ChangeNotifier {
     _magicWandHandler = null;
     _closedRegionFillHandler = null;
     _frameCommands = null;
+    _layerTransformer?.dispose();
 
     // 移除监听器
     layerManager.removeListener(_onLayerChanged);
@@ -766,8 +804,11 @@ class EditorState extends ChangeNotifier {
     colorManager.removeListener(_onColorChanged);
     selectionManager.removeListener(_onSelectionChanged);
     strokeManager.removeListener(_onStrokeChanged);
+    toolManager.toolNotifier.removeListener(_rememberToolbarSlot);
+    layerManager.activeLayerNotifier.removeListener(_rememberToolbarSlot);
 
     // 释放管理器
+    toolbarSlotMemory.dispose();
     toolManager.dispose();
     colorManager.dispose();
     selectionManager.dispose();

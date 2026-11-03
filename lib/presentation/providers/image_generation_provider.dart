@@ -1,9 +1,7 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:image/image.dart' as img;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../core/constants/model_capabilities.dart';
@@ -17,10 +15,7 @@ import '../../core/utils/app_logger.dart';
 import '../../core/utils/character_center_resolver.dart';
 import '../../core/utils/image_save_utils.dart';
 import '../../core/utils/image_share_sanitizer.dart';
-import '../../core/utils/inpaint_mask_utils.dart';
-import '../../core/utils/nai_prompt_formatter.dart';
 import '../../core/utils/nai_resolution_adapter.dart';
-import '../../core/utils/pica_lanczos_resizer.dart';
 import '../../core/utils/prompt_preset_resolution.dart';
 import '../../data/datasources/remote/nai_image_generation_api_service.dart';
 import '../../data/models/character/character_prompt.dart' as ui_character;
@@ -33,6 +28,7 @@ import 'alias_resolver_service.dart';
 import '../../data/services/gallery/gallery_image_file_deleter.dart';
 import '../../data/services/statistics_cache_service.dart';
 import '../services/generation_history_storage_service.dart';
+import '../services/prompt_formatting_policy.dart';
 import '../../data/services/auth_provider.dart';
 import 'dlss_provider.dart';
 import 'character_prompt_provider.dart';
@@ -46,7 +42,9 @@ import 'generation/generation_result_lifecycle_service.dart';
 import 'generation/generation_settings_notifiers.dart';
 import 'generation/image_generation_coordinator.dart';
 import 'generation/image_workflow_controller.dart';
+import 'generation/pending_failed_snapshots.dart';
 import 'generation/stream_preview_snapshot.dart';
+import 'generation/stream_snapshot_composition.dart';
 import 'image_save_settings_provider.dart';
 import 'local_gallery_provider.dart';
 import 'prompt_config_provider.dart';
@@ -90,6 +88,8 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
   final StreamPreviewSnapshotStore _streamPreviews =
       StreamPreviewSnapshotStore();
   final Set<String> _failedSnapshotKeys = {};
+  final PendingFailedSnapshots _pendingFailedSnapshots =
+      PendingFailedSnapshots();
   ImageComparisonSource? _activeComparisonSource;
   FixedTagUsageSnapshot? _activeFixedTagUsageSnapshot;
   bool _isDisposed = false;
@@ -102,6 +102,7 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
       _lifecycleEpoch++;
       _activeComparisonSource = null;
       _streamPreviews.clear();
+      _pendingFailedSnapshots.discardAll();
       final invocationSettled = _generationInvocationSettled;
       _generationInvocationSettled = null;
       if (invocationSettled != null && !invocationSettled.isCompleted) {
@@ -129,16 +130,16 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
   GenerationResultLifecycleService _lifecycle() {
     final gallery = ref.read(localGalleryNotifierProvider.notifier);
     final statistics = ref.read(statisticsCacheServiceProvider);
+    final saveSettings = ref.read(imageSaveSettingsNotifierProvider);
     final systemGallery = SystemGalleryPublisher(
-      syncEnabled: ref
-          .read(imageSaveSettingsNotifierProvider)
-          .syncToSystemGallery,
+      syncEnabled: saveSettings.syncToSystemGallery,
       capabilities: PlatformCapabilities.operatingSystem,
     );
     return GenerationResultLifecycleService(
       GenerationResultLifecycleDependencies(
         historyStorage: ref.read(generationHistoryStorageServiceProvider),
         resolveGalleryRootPath: GalleryFolderRepository.instance.getRootPath,
+        saveNaming: saveSettings.naming,
         addGalleryImages: gallery.addNewlySavedImages,
         refreshGallery: gallery.refresh,
         removeGalleryImages: gallery.removeDeletedImages,
@@ -212,6 +213,7 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
       if (!_isCurrentLifecycle(epoch)) return;
       _hasRestoredHistory = true;
       if (restored.isEmpty) return;
+      _pendingFailedSnapshots.placeBelowAll(restored.map((image) => image.id));
       final merged = lifecycle.mergeHistory(state.history, restored);
       final restorePreview =
           !state.isGenerating &&
@@ -239,9 +241,12 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
     }
   }
 
-  Future<void> flushGenerationHistory() {
-    if (_isDisposed) return Future<void>.value();
-    return _lifecycle().flushHistory();
+  /// 等仍在合成的失败快照落地后，把历史写入存储。
+  Future<void> flushGenerationHistory() async {
+    if (_isDisposed) return;
+    final lifecycle = _lifecycle();
+    await _pendingFailedSnapshots.settled();
+    await lifecycle.flushHistory();
   }
 
   void _retainHistoryCaches() {
@@ -284,11 +289,13 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
   Future<void> waitUntilGenerationInvocationSettled() =>
       _generationInvocationSettled?.future ?? Future<void>.value();
 
+  /// [bypassRandomPrompt]：智能体、MCP 等外部提交方显式给出的提示词不被随机模式替换。
   Future<void> generate(
     ImageParams params, {
     int? batchSizeOverride,
     bool preserveCharacterSnapshot = false,
     GenerationFocusedSnapshot? focusedOverride,
+    bool bypassRandomPrompt = false,
   }) async {
     if (_isDisposed || state.isBusy) {
       return;
@@ -360,6 +367,7 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
       final preparation = _preparationService(
         preserveCharacterSnapshot: preserveCharacterSnapshot,
         focusedOverride: focusedOverride,
+        bypassRandomPrompt: bypassRandomPrompt,
       );
       late final GenerationPreparationResult prepared;
       try {
@@ -459,6 +467,7 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
   GenerationRequestPreparationService _preparationService({
     bool preserveCharacterSnapshot = false,
     GenerationFocusedSnapshot? focusedOverride,
+    bool bypassRandomPrompt = false,
   }) {
     var queueExecuting = false;
     try {
@@ -472,7 +481,8 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
     return GenerationRequestPreparationService(
       GenerationPreparationDependencies(
         prompt: GenerationPromptPreparation(
-          randomModeEnabled: ref.read(randomPromptModeProvider),
+          randomModeEnabled:
+              !bypassRandomPrompt && ref.read(randomPromptModeProvider),
           queueExecuting: queueExecuting,
           generateAndApplyRandomPrompt: (model) =>
               generateAndApplyRandomPrompt(model: model),
@@ -497,16 +507,9 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
         focused: GenerationFocusedPreparation(
           // 只有生成页会把聚焦状态存在 workflow 里；Agent 等其他提交方必须显式
           // 传入，否则会继承上一张图残留的聚焦选区。
-          read: () {
-            if (focusedOverride != null) return focusedOverride;
-            final workflow = ref.read(imageWorkflowControllerProvider);
-            return GenerationFocusedSnapshot(
-              enabled: workflow.focusedInpaintEnabled,
-              minimumContextMegaPixels: workflow.minimumContextMegaPixels,
-              selectionRect: workflow.focusedSelectionRect,
-              contextCrop: workflow.focusedContextCrop,
-            );
-          },
+          read: () =>
+              focusedOverride ??
+              ref.read(imageWorkflowControllerProvider).focusedSnapshot,
         ),
         vibes: GenerationVibePreparation(prepare: _prepareVibesForGeneration),
       ),
@@ -696,15 +699,10 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
           clearStreamPreview: true,
         );
         if (images.isNotEmpty) {
-          final lifecycle = _lifecycle();
           final settings = ref.read(imageSaveSettingsNotifierProvider);
           if (settings.autoSave) {
             await _saveImages(images, epoch: epoch);
-            if (!_isCurrentLifecycle(epoch) || event.runId != _activeRunId) {
-              return;
-            }
           }
-          lifecycle.preloadMetadata(images);
         }
       case GenerationCancelled():
         _appendFailedSnapshots(event.runId);
@@ -751,101 +749,123 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
 
   String _snapshotKey(int runId, int imageNumber) => '$runId:$imageNumber';
 
+  /// 为取消、跳过或失败那一刻各槽位的最后一帧留下只读快照。
+  ///
+  /// 需要贴回源图的重绘快照交给后台合成，这里只预留它在历史中的位置。
   void _appendFailedSnapshots(int runId) {
     final numbers = state.streamPreviewSlots.isNotEmpty
         ? state.streamPreviewSlots.map((slot) => slot.imageNumber).toList()
         : state.currentImage > 0
         ? [state.currentImage]
         : const <int>[];
+    final fixedTagUsage = _activeFixedTagUsageSnapshot;
+    final capturedAt = DateTime.now();
     for (final number in numbers.reversed) {
       final key = _snapshotKey(runId, number);
       final preview = _streamPreviews.preview(runId, number);
       if (preview == null || !_failedSnapshotKeys.add(key)) continue;
-      final bytes = _materializePreview(preview);
-      final size =
-          NaiResolutionAdapter.readImageSize(bytes) ??
-          (preview.params.width, preview.params.height);
-      final snapshot = GeneratedImage.create(
-        bytes,
-        width: size.$1,
-        height: size.$2,
-        kind: GeneratedImageKind.failedStreamSnapshot,
-        fixedTagUsageSnapshot: _activeFixedTagUsageSnapshot,
-        metadata: _metadataFromParams(
+      _streamPreviews.release(runId, number);
+      final frame = StreamPreviewFrame(
+        bytes: preview.bytes,
+        placement: preview.focusedPreviewPlacement,
+      );
+      if (streamSnapshotPlacement(frame) == null) {
+        final snapshot = _failedSnapshot(
+          frame.bytes,
           preview.params,
-          outputWidth: size.$1,
-          outputHeight: size.$2,
+          fixedTagUsage,
+          createdAt: capturedAt,
+        );
+        _commitHistory([snapshot, ...state.history]);
+        continue;
+      }
+      final id = _pendingFailedSnapshots.reserve(state.history);
+      _pendingFailedSnapshots.track(
+        _landFailedSnapshot(
+          id,
+          frame,
+          compose: ref.read(streamSnapshotComposerProvider),
+          params: preview.params,
+          fixedTagUsage: fixedTagUsage,
+          capturedAt: capturedAt,
+          epoch: _lifecycleEpoch,
         ),
       );
-      state = state.copyWith(
-        history: [
-          snapshot,
-          ...state.history,
-        ].take(GenerationResultLifecycleService.historyLimit).toList(),
-      );
-      _streamPreviews.release(runId, number);
     }
     _retainHistoryCaches();
   }
 
-  Uint8List _materializePreview(RememberedStreamPreview preview) {
-    final placement = preview.focusedPreviewPlacement;
-    if (placement == null || !placement.isValid) return preview.bytes;
-    final source = img.decodeImage(placement.sourceImage);
-    final generated = img.decodeImage(preview.bytes);
-    final mask = placement.maskImage == null
-        ? null
-        : img.decodeImage(placement.maskImage!);
-    if (source == null || generated == null) return preview.bytes;
-    final x = (placement.xPercent * source.width)
-        .round()
-        .clamp(0, max(0, source.width - 1))
-        .toInt();
-    final y = (placement.yPercent * source.height)
-        .round()
-        .clamp(0, max(0, source.height - 1))
-        .toInt();
-    final width = (placement.widthPercent * source.width)
-        .round()
-        .clamp(1, max(1, source.width - x))
-        .toInt();
-    final height = (placement.heightPercent * source.height)
-        .round()
-        .clamp(1, max(1, source.height - y))
-        .toInt();
-    img.Image patch;
-    if (mask == null) {
-      patch = PicaLanczosResizer.resizeImage(
-        generated,
-        width: width,
-        height: height,
+  Future<void> _landFailedSnapshot(
+    String id,
+    StreamPreviewFrame frame, {
+    required StreamSnapshotComposer compose,
+    required ImageParams params,
+    required FixedTagUsageSnapshot? fixedTagUsage,
+    required DateTime capturedAt,
+    required int epoch,
+  }) async {
+    Uint8List bytes;
+    try {
+      bytes = await compose(frame);
+    } catch (error, stackTrace) {
+      AppLogger.e(
+        'Failed to compose stream snapshot; keeping the raw preview',
+        error,
+        stackTrace,
       );
-    } else {
-      final requestPreview = PicaLanczosResizer.resizeImage(
-        generated,
-        width: mask.width,
-        height: mask.height,
-      );
-      patch = PicaLanczosResizer.resizeImage(
-        InpaintMaskUtils.applyCompositeMaskToGeneratedImage(
-          requestPreview,
-          mask,
-        ),
-        width: width,
-        height: height,
-      );
+      bytes = frame.bytes;
     }
-    final composed = img.Image.from(source, noAnimation: true);
-    img.compositeImage(
-      composed,
-      patch,
-      dstX: x,
-      dstY: y,
-      dstW: width,
-      dstH: height,
-      blend: mask == null ? img.BlendMode.direct : img.BlendMode.alpha,
+    if (!_isCurrentLifecycle(epoch)) return;
+    final floor = _pendingFailedSnapshots.take(id);
+    if (floor == null) return;
+    final snapshot = _failedSnapshot(
+      bytes,
+      params,
+      fixedTagUsage,
+      id: id,
+      createdAt: capturedAt,
     );
-    return Uint8List.fromList(img.encodePng(composed, level: 1));
+    _commitHistory(
+      PendingFailedSnapshots.insert(state.history, snapshot, floor),
+    );
+    _retainHistoryCaches();
+  }
+
+  GeneratedImage _failedSnapshot(
+    Uint8List bytes,
+    ImageParams params,
+    FixedTagUsageSnapshot? fixedTagUsage, {
+    required DateTime createdAt,
+    String? id,
+  }) {
+    final size =
+        NaiResolutionAdapter.readImageSize(bytes) ??
+        (params.width, params.height);
+    return GeneratedImage.create(
+      bytes,
+      id: id,
+      createdAt: createdAt,
+      width: size.$1,
+      height: size.$2,
+      kind: GeneratedImageKind.failedStreamSnapshot,
+      fixedTagUsageSnapshot: fixedTagUsage,
+      metadata: _metadataFromParams(
+        params,
+        outputWidth: size.$1,
+        outputHeight: size.$2,
+        fixedTagUsageSnapshot: fixedTagUsage,
+      ),
+    );
+  }
+
+  /// 快照可能在失败状态写入之后才落地，copyWith 省略 errorMessage 会把错误清掉。
+  void _commitHistory(List<GeneratedImage> history) {
+    state = state.copyWith(
+      history: history
+          .take(GenerationResultLifecycleService.historyLimit)
+          .toList(),
+      errorMessage: state.errorMessage,
+    );
   }
 
   StreamPreviewSlot _finalizedPreviewSlot(int imageNumber, int totalImages) {
@@ -923,8 +943,10 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
       cancel();
       return;
     }
-    _appendFailedSnapshots(_activeRunId);
-    if (!coordinator.skipCurrentRequest(handle)) return;
+    final runId = _activeRunId;
+    final skipped = coordinator.skipCurrentRequest(handle);
+    _appendFailedSnapshots(runId);
+    if (!skipped) return;
     state = state.copyWith(clearStreamPreview: true);
   }
 
@@ -942,11 +964,11 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
     final runId = _activeRunId;
     _activeInvocationId = 0;
     _activeComparisonSource = null;
-    _appendFailedSnapshots(runId);
-    _streamPreviews.clear();
     final coordinator = _coordinator;
     final handle = _activeRun;
     if (coordinator != null && handle != null) coordinator.cancel(handle);
+    _appendFailedSnapshots(runId);
+    _streamPreviews.clear();
     _activeRunId = ++_runCounter;
     // 图已出完、只剩落盘收尾时点取消，不该把已有结果改标成已取消。
     final settled = state.status == GenerationStatus.completed;
@@ -965,6 +987,40 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
   /// [comparisonSourceImage] is supplied by single-source transformations such
   /// as NovelAI upscale and local upscale so their result can be compared.
   Future<String?> registerExternalImage(
+    Uint8List imageBytes, {
+    required ImageParams params,
+    int? width,
+    int? height,
+    Uint8List? comparisonSourceImage,
+    bool saveToLocal = false,
+    String? saveDirectoryPath,
+    bool syncToGalleryIndex = true,
+    bool addToDisplay = false,
+    bool replaceCurrentDisplay = false,
+    bool embedNaiMetadata = true,
+  }) async {
+    final image = await registerExternalImageEntry(
+      imageBytes,
+      params: params,
+      width: width,
+      height: height,
+      comparisonSourceImage: comparisonSourceImage,
+      saveToLocal: saveToLocal,
+      saveDirectoryPath: saveDirectoryPath,
+      syncToGalleryIndex: syncToGalleryIndex,
+      addToDisplay: addToDisplay,
+      replaceCurrentDisplay: replaceCurrentDisplay,
+      embedNaiMetadata: embedNaiMetadata,
+    );
+    return image?.filePath;
+  }
+
+  /// Same as [registerExternalImage], but returns the registered history entry
+  /// so callers can address the result by its stable id.
+  ///
+  /// Returns null when the generation lifecycle ended or the entry was deleted
+  /// before registration finished.
+  Future<GeneratedImage?> registerExternalImageEntry(
     Uint8List imageBytes, {
     required ImageParams params,
     int? width,
@@ -1026,10 +1082,9 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
         syncToGalleryIndex: syncToGalleryIndex,
       );
       image = result.images.first;
-      return _deletedImageIds.contains(image.id) ? null : image.filePath;
+      return _deletedImageIds.contains(image.id) ? null : image;
     }
-    lifecycle.preloadMetadata([image]);
-    return null;
+    return image;
   }
 
   Future<GenerationSaveResult> _saveImages(
@@ -1095,6 +1150,7 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
   }
 
   void clearHistory() {
+    _pendingFailedSnapshots.discardAll();
     state = state.copyWith(
       currentImages: [],
       history: [],
@@ -1232,17 +1288,18 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
     final result = await ref
         .read(promptConfigNotifierProvider.notifier)
         .generateRandomPrompt(model: selectedModel, seed: seed);
-    final formatted = NaiPromptFormatter.format(result.mainPrompt);
-    if (!_isCurrentLifecycle(epoch)) return formatted;
+    if (!_isCurrentLifecycle(epoch)) return result.mainPrompt;
+    final policy = ref.read(promptFormattingPolicyProvider);
+    String format(String prompt) =>
+        policy.apply(prompt, convertSdSyntax: false);
+    final formatted = format(result.mainPrompt);
     ref.read(generationParamsNotifierProvider.notifier).updatePrompt(formatted);
     if (result.hasCharacters &&
         capabilities.randomPromptProfile.supportsCharacterPrompts) {
       final characters = result.toCharacterPrompts().map((character) {
         return character.copyWith(
-          prompt: NaiPromptFormatter.format(character.prompt),
-          negativePrompt: character.negativePrompt.isEmpty
-              ? character.negativePrompt
-              : NaiPromptFormatter.format(character.negativePrompt),
+          prompt: format(character.prompt),
+          negativePrompt: format(character.negativePrompt),
         );
       }).toList();
       ref.read(characterPromptNotifierProvider.notifier).replaceAll(characters);
@@ -1265,6 +1322,7 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
     ImageParams params, {
     required int outputWidth,
     required int outputHeight,
+    required FixedTagUsageSnapshot? fixedTagUsageSnapshot,
   }) {
     final effective = params.resolveFixedSettings().copyWith(
       width: outputWidth,
@@ -1302,16 +1360,17 @@ class ImageGenerationNotifier extends _$ImageGenerationNotifier {
       charNegCaptions: charNegCaptions,
       useCoords: effective.useCoords,
     );
-    final raw = jsonEncode(comment);
-    final metadata = NaiImageMetadata.fromNaiComment({
-      'Comment': raw,
-      'Software': 'NovelAI',
-      'Source': ImageSaveUtils.getModelSourceName(effective.model),
-    }, rawJson: raw);
-    final snapshot = _activeFixedTagUsageSnapshot;
+    final textFields = ImageSaveUtils.buildMetadata(
+      commentJson: comment,
+      params: effective,
+    );
+    final metadata = NaiImageMetadata.fromNaiComment(
+      textFields,
+      rawJson: textFields['Comment'] as String,
+    );
     // 快照不再进 PNG，内存元数据仍要带上供历史面板与详情页判定固定词。
-    return snapshot == null
+    return fixedTagUsageSnapshot == null
         ? metadata
-        : metadata.withFixedTagUsageData(snapshot.toJson());
+        : metadata.withFixedTagUsageData(fixedTagUsageSnapshot.toJson());
   }
 }

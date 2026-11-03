@@ -88,6 +88,23 @@ class GestureState {
   /// 光标位置
   Offset? cursorPosition;
 
+  /// 本次双指手势是否交给工具；null 表示尚未决定
+  bool? toolMultiTouch;
+
+  /// 工具接管后抬起了一根手指，剩下的手指既不平移也不作画
+  bool toolMultiTouchEnded = false;
+
+  /// 工具接管时的缩放与旋转基准，之后的数值都相对于它
+  double toolMultiTouchBaseScale = 1.0;
+  double toolMultiTouchBaseRotation = 0.0;
+
+  void resetMultiTouch() {
+    toolMultiTouch = null;
+    toolMultiTouchEnded = false;
+    toolMultiTouchBaseScale = 1.0;
+    toolMultiTouchBaseRotation = 0.0;
+  }
+
   /// 重置状态
   void reset() {
     isPanning = false;
@@ -98,6 +115,7 @@ class GestureState {
     brushSizeStartPosition = null;
     initialBrushSize = 0;
     initialScale = 1.0;
+    resetMultiTouch();
   }
 }
 
@@ -237,6 +255,9 @@ class InputHandler {
         case LogicalKeyboardKey.minus:
           state.canvasController.zoomOut();
           return KeyEventResult.handled;
+        case LogicalKeyboardKey.keyT:
+          state.beginFreeTransform();
+          return KeyEventResult.handled;
       }
     }
 
@@ -265,10 +286,17 @@ class InputHandler {
           state.increaseBrushOpacity();
           return KeyEventResult.handled;
         case LogicalKeyboardKey.escape:
-          // 拖动中的工具（移动、选区、取景框）一并放弃本次手势
+          // 拖动中的工具（移动、选区、取景框）一并放弃本次手势；没有手势时交给工具取消待定操作
+          final hadGesture = _drawingPointerId != null;
           _cancelDrawingPointer();
           state.cancelStroke();
+          if (!hadGesture) state.currentTool?.onEscape(state);
           return KeyEventResult.handled;
+        case LogicalKeyboardKey.enter:
+        case LogicalKeyboardKey.numpadEnter:
+          if (state.currentTool?.onConfirm(state) ?? false) {
+            return KeyEventResult.handled;
+          }
         case LogicalKeyboardKey.delete:
         case LogicalKeyboardKey.backspace:
           if (state.selectionPath != null) {
@@ -333,7 +361,10 @@ class InputHandler {
         event.localPosition,
         frame: state.frame,
       );
-      tool.onPointerHover(PointerHoverEvent(position: canvasPosition), state);
+      tool.onPointerHover(
+        PointerHoverEvent(position: canvasPosition, kind: event.kind),
+        state,
+      );
     }
   }
 
@@ -348,7 +379,7 @@ class InputHandler {
         return;
       }
       if (_activeTouchPointers.length > 1) {
-        _cancelDrawingPointer();
+        _cancelDrawingPointer(handoffToMultiTouch: true);
         gesture.isPanning = true;
         gesture.lastPanPosition = null;
         gesture.initialScale = state.canvasController.scale;
@@ -399,7 +430,10 @@ class InputHandler {
         );
         _drawingPointerId = event.pointer;
         _drawingPointerKind = event.kind;
-        tool.onPointerDown(PointerDownEvent(position: canvasPosition), state);
+        tool.onPointerDown(
+          PointerDownEvent(position: canvasPosition, kind: event.kind),
+          state,
+        );
       }
     }
   }
@@ -440,7 +474,10 @@ class InputHandler {
           event.localPosition,
           frame: state.frame,
         );
-        tool.onPointerUp(PointerUpEvent(position: canvasPosition), state);
+        tool.onPointerUp(
+          PointerUpEvent(position: canvasPosition, kind: event.kind),
+          state,
+        );
       }
     }
     if (finishesDrawing) {
@@ -470,6 +507,11 @@ class InputHandler {
       onStateChanged();
     }
     if (_activeTouchPointers.isEmpty) {
+      // 系统取消的双指手势不提交，交给工具撤回预览
+      if (gesture.toolMultiTouch == true && !gesture.toolMultiTouchEnded) {
+        state.currentTool?.onPointerCancel(state);
+      }
+      gesture.resetMultiTouch();
       gesture.isPanning = false;
       gesture.lastPanPosition = null;
     }
@@ -519,7 +561,10 @@ class InputHandler {
           event.localPosition,
           frame: state.frame,
         );
-        tool.onPointerMove(PointerMoveEvent(position: canvasPosition), state);
+        tool.onPointerMove(
+          PointerMoveEvent(position: canvasPosition, kind: event.kind),
+          state,
+        );
       }
     }
   }
@@ -569,7 +614,7 @@ class InputHandler {
   void handleScaleUpdate(ScaleUpdateDetails details) {
     // 有些平台不会在第二根手指落下时重新发送 scale start。
     if (!gesture.isPanning && details.pointerCount > 1) {
-      _cancelDrawingPointer();
+      _cancelDrawingPointer(handoffToMultiTouch: true);
       gesture.isPanning = true;
       gesture.lastPanPosition = null;
       gesture.initialScale = state.canvasController.scale;
@@ -593,6 +638,8 @@ class InputHandler {
     }
 
     if (gesture.isPanning) {
+      if (_routeMultiTouchToTool(details)) return;
+
       // 平移
       if (gesture.lastPanPosition != null) {
         final delta = details.focalPoint - gesture.lastPanPosition!;
@@ -623,6 +670,11 @@ class InputHandler {
       return;
     }
 
+    if (gesture.toolMultiTouch == true && !gesture.toolMultiTouchEnded) {
+      state.currentTool?.onMultiTouchEnd(state);
+    }
+    gesture.resetMultiTouch();
+
     if (gesture.isPanning) {
       gesture.isPanning = false;
       gesture.lastPanPosition = null;
@@ -632,13 +684,54 @@ class InputHandler {
     // 工具事件已移至 handlePointerUp 直接处理
   }
 
-  void _cancelDrawingPointer() {
+  /// 触屏双指在第一帧决定归属；工具接管后不再平移缩放画布，直到手指全部抬起
+  bool _routeMultiTouchToTool(ScaleUpdateDetails details) {
+    final tool = state.currentTool;
+    if (tool == null) return false;
+    final decided = gesture.toolMultiTouch;
+    if (decided == null) {
+      if (details.pointerCount < 2 || _activeTouchPointers.length < 2) {
+        return false;
+      }
+      final claimed = tool.onMultiTouchStart(
+        state,
+        _toCanvas(details.localFocalPoint),
+      );
+      gesture.toolMultiTouch = claimed;
+      gesture.toolMultiTouchBaseScale = details.scale;
+      gesture.toolMultiTouchBaseRotation = details.rotation;
+      return claimed;
+    }
+    if (!decided) return false;
+    if (gesture.toolMultiTouchEnded) return true;
+    if (details.pointerCount < 2) {
+      gesture.toolMultiTouchEnded = true;
+      tool.onMultiTouchEnd(state);
+      return true;
+    }
+    final turn = details.rotation - gesture.toolMultiTouchBaseRotation;
+    tool.onMultiTouchUpdate(
+      state,
+      _toCanvas(details.localFocalPoint),
+      details.scale / gesture.toolMultiTouchBaseScale,
+      // 镜像视图里屏幕上的顺时针在文档里是逆时针
+      state.canvasController.isMirroredHorizontally ? -turn : turn,
+    );
+    return true;
+  }
+
+  Offset _toCanvas(Offset localPosition) =>
+      state.canvasController.screenToCanvas(localPosition, frame: state.frame);
+
+  void _cancelDrawingPointer({bool handoffToMultiTouch = false}) {
     if (_drawingPointerId != null) {
       final tool = state.currentTool;
-      if (tool != null) {
-        tool.onPointerCancel(state);
-      } else {
+      if (tool == null) {
         state.cancelStroke();
+      } else if (handoffToMultiTouch) {
+        tool.onPointerHandoffToMultiTouch(state);
+      } else {
+        tool.onPointerCancel(state);
       }
     }
     _drawingPointerId = null;
@@ -680,8 +773,10 @@ class InputHandler {
       case 'color_picker':
         return SystemMouseCursors.precise;
       case 'frame':
-      case 'move':
         return SystemMouseCursors.move;
+      case 'move':
+        // 悬停在变换手柄上时换成缩放或旋转的样式
+        return state.layerTransformer.cursor.value;
       case ClosedRegionFillTool.toolId:
         return SystemMouseCursors.click;
       default:

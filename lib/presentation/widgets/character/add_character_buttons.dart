@@ -21,11 +21,8 @@ class AddCharacterButtons extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final l10n = AppLocalizations.of(context)!;
     final hasScaledText = MediaQuery.textScalerOf(context).scale(14) > 14;
-    // 偏离上游：上游只在 inline_character_row 的行尾添加芯片上做了上限处理，
-    // 本组件（挂在参数面板与 web_left_panel 的 headerActions，移动端同样可达）
-    // 全文没有任何上限判断，到达官方上限后 addCharacter 只写一行日志就 return，
-    // 表现是"点了没反应"。而且上游那处只给 tooltip——触屏没有 hover，
-    // 要长按才看得到原因，等于没有提示，所以这里点击也必须有可见反馈。
+    // 到达官方角色上限后 addCharacter 只写一行日志就返回，按钮点了没反应。
+    // 这里变灰并带 tooltip；触屏没有 hover，所以点击时也给出同一句提示。
     final limitReached = ref.watch(characterLimitReachedProvider);
     final disabledReason = limitReached
         ? l10n.character_limitReached(
@@ -211,10 +208,7 @@ class _GenderButtonState extends State<_GenderButton> {
         ),
       ),
     );
-    return _wrapDisabled(
-      disabledReason: widget.disabledReason,
-      child: button,
-    );
+    return _wrapDisabled(disabledReason: widget.disabledReason, child: button);
   }
 }
 
@@ -308,9 +302,6 @@ class _LibraryButtonState extends State<_LibraryButton> {
         ),
       ),
     );
-    return _wrapDisabled(
-      disabledReason: widget.disabledReason,
-      child: button,
-    );
+    return _wrapDisabled(disabledReason: widget.disabledReason, child: button);
   }
 }

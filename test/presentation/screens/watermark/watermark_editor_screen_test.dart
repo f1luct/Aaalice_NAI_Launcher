@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -8,13 +9,17 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
 import 'package:image/image.dart' as img;
 import 'package:nai_launcher/core/constants/storage_keys.dart';
+import 'package:nai_launcher/core/derivatives/derivative_registry.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
+import 'package:nai_launcher/core/watermark/watermark_render_service.dart';
 import 'package:nai_launcher/data/models/watermark/watermark_settings.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:nai_launcher/presentation/screens/watermark/watermark_editor_controls.dart';
 import 'package:nai_launcher/presentation/screens/watermark/watermark_editor_launcher.dart';
 import 'package:nai_launcher/presentation/screens/watermark/watermark_editor_screen.dart';
 
+import '../../../helpers/adaptive_panel_expectations.dart';
+import '../../../helpers/derivative_copy_save_scenarios.dart';
 import '../../../helpers/labeled_rows_expectations.dart';
 
 void main() {
@@ -315,6 +320,7 @@ void main() {
     expect(find.byKey(const ValueKey('adaptive-bottom-sheet')), findsOneWidget);
     final form = find.byKey(const ValueKey('watermark-color-form'));
     expect(form, findsOneWidget);
+    expectPanelHeaderScrollsWithContent(tester);
     expect(find.byType(Dialog), findsNothing);
     await tester.scrollUntilVisible(
       find.text('Confirm'),
@@ -420,6 +426,110 @@ void main() {
     expect(find.text('82%'), findsOneWidget);
   });
 
+  testWidgets('auto placement switch is global and keeps the anchor', (
+    tester,
+  ) async {
+    WatermarkSettings? changed;
+    await tester.binding.setSurfaceSize(const Size(420, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _controlsApp(
+        settings: const WatermarkSettings(),
+        selectedLayer: WatermarkEditableLayer.logo,
+        onSettingsChanged: (value) => changed = value,
+      ),
+    );
+
+    await tester.scrollUntilVisible(
+      find.text('Auto placement'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Auto placement'));
+    await tester.pump();
+
+    expect(changed?.autoPlacement, isTrue);
+    expect(
+      changed?.universalLayout.textPlacement.anchor,
+      WatermarkAnchor.bottomRight,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('text auto grayscale replaces the color picker with a slider', (
+    tester,
+  ) async {
+    WatermarkSettings? changed;
+    await tester.binding.setSurfaceSize(const Size(420, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _controlsApp(
+        settings: const WatermarkSettings(),
+        selectedLayer: WatermarkEditableLayer.text,
+        onSettingsChanged: (value) => changed = value,
+      ),
+    );
+
+    expect(find.text('Tone difference'), findsNothing);
+    await tester.scrollUntilVisible(
+      find.text('Auto grayscale'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Auto grayscale'));
+    await tester.pump();
+    expect(changed?.textStyle.autoTone, isTrue);
+    expect(changed?.logoStyle.autoTone, isFalse);
+
+    await tester.pumpWidget(
+      _controlsApp(
+        settings: changed!,
+        selectedLayer: WatermarkEditableLayer.text,
+        onSettingsChanged: (value) => changed = value,
+      ),
+    );
+    await tester.pump();
+
+    final colorTile = tester.widget<ListTile>(
+      find.ancestor(
+        of: find.text('Color Picker'),
+        matching: find.byType(ListTile),
+      ),
+    );
+    expect(colorTile.enabled, isFalse);
+    expect(find.text('Color is set by auto grayscale'), findsOneWidget);
+    expect(find.text('Tone difference'), findsOneWidget);
+    expect(find.text('70%'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('logo auto grayscale is switched separately', (tester) async {
+    WatermarkSettings? changed;
+    await tester.binding.setSurfaceSize(const Size(420, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _controlsApp(
+        settings: const WatermarkSettings(
+          logoStyle: WatermarkLogoStyle(enabled: true),
+        ),
+        selectedLayer: WatermarkEditableLayer.logo,
+        onSettingsChanged: (value) => changed = value,
+      ),
+    );
+
+    await tester.scrollUntilVisible(
+      find.text('Auto grayscale'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Auto grayscale'));
+    await tester.pump();
+
+    expect(changed?.logoStyle.autoTone, isTrue);
+    expect(changed?.textStyle.autoTone, isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
   for (final locale in const ['en', 'ja']) {
     for (final width in labeledRowWidths) {
       for (final scale in labeledRowTextScales) {
@@ -481,7 +591,72 @@ void main() {
       }
     }
   }
+
+  group('save copy', () {
+    late ui.Image preview;
+
+    setUpAll(() async {
+      preview = await WatermarkRenderService.decodePreview(
+        _pngBytes(48, 32),
+        requireStatic: true,
+      );
+    });
+    tearDownAll(() => preview.dispose());
+
+    defineDerivativeCopySaveTests<WatermarkRenderResult>(
+      kind: DerivativeKind.watermark,
+      editorType: WatermarkEditorScreen,
+      surfaceSize: const Size(1180, 760),
+      saveButton: find.text('Save copy'),
+      savingLabel: (l10n) => l10n.watermark_saving,
+      savedLabel: (l10n) => l10n.watermark_saved,
+      galleryIndexFailedLabel: (l10n) => l10n.watermark_galleryRefreshFailed,
+      systemGalleryFailedLabel: (l10n) =>
+          l10n.watermark_systemGalleryExportFailed,
+      overrides: () => [localStorageServiceProvider.overrideWithValue(storage)],
+      renderResult: (bytes, fileName) => WatermarkRenderResult(
+        bytes: bytes,
+        fileName: fileName,
+        width: 48,
+        height: 32,
+        metadataPreserved: false,
+      ),
+      buildEditor: (render) => WatermarkEditorScreen(
+        sourceBytes: _pngBytes(48, 32),
+        sourceFileName: 'source.png',
+        sourcePath: 'source.png',
+        defaultsOnly: false,
+        decodePreview: (_, {requireStatic = false}) async => preview.clone(),
+        renderCopy: (request, {cancellationToken}) =>
+            render(request.sourceBytes),
+      ),
+    );
+  });
 }
+
+Widget _controlsApp({
+  required WatermarkSettings settings,
+  required WatermarkEditableLayer selectedLayer,
+  required ValueChanged<WatermarkSettings> onSettingsChanged,
+}) => MaterialApp(
+  locale: const Locale('en'),
+  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  supportedLocales: AppLocalizations.supportedLocales,
+  home: Scaffold(
+    body: WatermarkEditorControls(
+      settings: settings,
+      layout: settings.universalLayout,
+      selectedLayer: selectedLayer,
+      logoAvailable: true,
+      preserveMetadata: false,
+      onOpenMetadataSettings: () {},
+      onSettingsChanged: onSettingsChanged,
+      onLayoutChanged: (_) {},
+      onSelectedLayerChanged: (_) {},
+      onChooseLogo: () {},
+    ),
+  ),
+);
 
 Uint8List _pngBytes(int width, int height) {
   final image = img.Image(width: width, height: height, numChannels: 4);

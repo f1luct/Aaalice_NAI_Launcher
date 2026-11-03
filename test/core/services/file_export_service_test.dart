@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -309,6 +310,43 @@ void main() {
         completion(isNull),
       );
     });
+  });
+
+  test(
+    'temporary output keeps long CJK names within one 255-byte segment',
+    () async {
+      late String temporaryPath;
+      await FileExportService.withTemporaryOutput<void>(
+        fileName: '${'猫' * 120}.png',
+        action: (path) async {
+          temporaryPath = path;
+          await File(path).writeAsBytes([1]);
+        },
+      );
+
+      final leaf = p.basename(temporaryPath);
+      expect(leaf, startsWith('猫'));
+      expect(leaf, endsWith('.png'));
+      expect(utf8.encode(leaf).length, lessThanOrEqualTo(255));
+      expect(await Directory(p.dirname(temporaryPath)).exists(), isFalse);
+    },
+  );
+
+  test('startup cleanup removes every leftover temporary output', () async {
+    final workDirectory = await exportDirectory.createTemp();
+    final staging = await Directory(
+      p.join(workDirectory.path, 'nai-launcher-diagnostics-1.zip.contents'),
+    ).create();
+    final legacyFile = await File(
+      p.join(exportDirectory.path, '1_export.png'),
+    ).writeAsBytes([1]);
+
+    await FileExportService.cleanupTemporaryOutputs();
+
+    expect(await staging.exists(), isFalse);
+    expect(await workDirectory.exists(), isFalse);
+    expect(await legacyFile.exists(), isFalse);
+    expect(await exportDirectory.exists(), isTrue);
   });
 }
 

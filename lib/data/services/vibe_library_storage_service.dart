@@ -234,7 +234,6 @@ class VibeLibraryStorageService {
         scannedCount: 0,
         upsertedCount: 0,
         deletedCount: 0,
-        failedCount: 1,
         errors: [error.toString()],
       );
     }
@@ -273,20 +272,10 @@ class VibeLibraryStorageService {
   Future<List<VibeLibraryEntry>> getEntriesByUsage({int limit = 20}) =>
       _categories.getEntriesByUsage(limit: limit);
 
-  Future<void> saveGenerationState({
-    required List<Map<String, dynamic>> vibeReferences,
-    required List<Map<String, dynamic>> preciseReferences,
-    required bool normalizeVibeStrength,
-  }) => saveGenerationStateJson(
-    jsonEncode({
-      'vibeReferences': vibeReferences,
-      'preciseReferences': preciseReferences,
-      'normalizeVibeStrength': normalizeVibeStrength,
-      'savedAt': DateTime.now().toIso8601String(),
-    }),
-  );
-  Future<void> saveGenerationStateJson(String stateJson) =>
-      _generation.saveJson(stateJson);
+  /// [stateJson] is the whole state as UTF-8 JSON; it embeds base64 images,
+  /// so callers encode it off the UI isolate.
+  Future<void> saveGenerationStateUtf8Json(Uint8List stateJson) =>
+      _generation.saveUtf8Json(stateJson);
   Future<Map<String, dynamic>?> loadGenerationState() async {
     try {
       final value = await loadGenerationStateJson();

@@ -6,7 +6,9 @@ import 'package:flutter/material.dart';
 import '../../../../core/utils/editor_compression_utils.dart';
 import '../../../../core/utils/hard_edge_mask_exporter.dart';
 import '../../../../core/utils/inpaint_mask_utils.dart';
+import '../../../../core/utils/picture_png_encoder.dart';
 import '../core/history_manager.dart';
+import '../core/stroke_rendering.dart';
 import '../layers/layer.dart';
 import '../layers/layer_manager.dart';
 
@@ -24,10 +26,14 @@ class ImageExporterNew {
       region,
       transparentBackground: transparentBackground,
     );
-    final byteData = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
     final width = image.width;
     final height = image.height;
-    image.dispose();
+    final ByteData? byteData;
+    try {
+      byteData = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+    } finally {
+      image.dispose();
+    }
 
     if (byteData == null) {
       throw Exception('Failed to convert image to RGBA bytes');
@@ -49,8 +55,12 @@ class ImageExporterNew {
     Rect region,
   ) async {
     final image = await layerManager.exportMergedImage(region);
-    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-    image.dispose();
+    final ByteData? byteData;
+    try {
+      byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+    } finally {
+      image.dispose();
+    }
 
     if (byteData == null) {
       throw Exception('Failed to convert image to bytes');
@@ -122,18 +132,9 @@ class ImageExporterNew {
 
     canvas.restore();
 
-    final picture = recorder.endRecording();
-    final image = await picture.toImage(width, height);
-    picture.dispose();
-
-    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-    image.dispose();
-
-    if (byteData == null) {
-      throw Exception('Failed to convert mask to bytes');
-    }
-
-    return InpaintMaskUtils.normalizeMaskBytes(byteData.buffer.asUint8List());
+    return InpaintMaskUtils.normalizeMaskBytesAsync(
+      await encodePictureAsPng(recorder.endRecording(), width, height),
+    );
   }
 
   /// Returns the CPU hard-edge raster without a PNG encode/decode round trip.
@@ -171,7 +172,7 @@ class ImageExporterNew {
       forceHardEdges: true,
       additionalMaskRects: additionalMaskRects,
     );
-    final decoded = InpaintMaskUtils.decodeBinaryMask(bytes);
+    final decoded = await InpaintMaskUtils.decodeBinaryMaskAsync(bytes);
     if (decoded == null) {
       throw StateError('Failed to read the layer mask.');
     }
@@ -204,16 +205,8 @@ class ImageExporterNew {
     canvas.translate(-region.left, -region.top);
     _drawMaskLayer(canvas, layer, forceHardEdges: true);
     canvas.restore();
-    final picture = recorder.endRecording();
-    final image = await picture.toImage(width, height);
-    picture.dispose();
-    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-    image.dispose();
-    if (byteData == null) {
-      throw Exception('Failed to convert mask to bytes');
-    }
-    final decoded = InpaintMaskUtils.decodeBinaryMask(
-      InpaintMaskUtils.normalizeMaskBytes(byteData.buffer.asUint8List()),
+    final decoded = await InpaintMaskUtils.decodeBinaryMaskAsync(
+      await encodePictureAsPng(recorder.endRecording(), width, height),
     );
     if (decoded == null) {
       throw StateError('Failed to read the layer mask.');
@@ -272,6 +265,7 @@ class ImageExporterNew {
     ]);
   }
 
+  /// 把 [picture]（所有权移交）栅格化并编码为 PNG
   static bool _hasEraser(Layer layer) =>
       layer.strokes.any((stroke) => stroke.isEraser);
 
@@ -323,59 +317,17 @@ class ImageExporterNew {
     StrokeData stroke, {
     bool forceHardEdges = false,
   }) {
-    if (stroke.points.isEmpty) {
-      return;
-    }
-
-    final paint = Paint()
-      ..color = Colors.white
-      ..strokeWidth = stroke.size
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..style = PaintingStyle.stroke;
-
+    final paint = Paint()..color = Colors.white;
     if (stroke.isEraser) {
       paint.blendMode = BlendMode.clear;
     }
 
-    if (!forceHardEdges && stroke.hardness < 1.0) {
-      final sigma = stroke.size * (1.0 - stroke.hardness) * 0.5;
-      paint.maskFilter = MaskFilter.blur(BlurStyle.normal, sigma);
-    }
-
-    if (stroke.points.length == 1) {
-      canvas.drawCircle(
-        stroke.points.first,
-        stroke.size / 2,
-        paint..style = PaintingStyle.fill,
-      );
-      return;
-    }
-
-    canvas.drawPath(_createSmoothPath(stroke.points), paint);
-  }
-
-  static Path _createSmoothPath(List<Offset> points) {
-    final path = Path();
-    if (points.isEmpty) {
-      return path;
-    }
-
-    path.moveTo(points.first.dx, points.first.dy);
-
-    if (points.length == 2) {
-      path.lineTo(points.last.dx, points.last.dy);
-      return path;
-    }
-
-    for (int i = 1; i < points.length - 1; i++) {
-      final p0 = points[i];
-      final p1 = points[i + 1];
-      final midX = (p0.dx + p1.dx) / 2;
-      final midY = (p0.dy + p1.dy) / 2;
-      path.quadraticBezierTo(p0.dx, p0.dy, midX, midY);
-    }
-    path.lineTo(points.last.dx, points.last.dy);
-    return path;
+    StrokeRendering.draw(
+      canvas,
+      stroke.points,
+      paint,
+      size: stroke.size,
+      hardness: forceHardEdges ? 1.0 : stroke.hardness,
+    );
   }
 }

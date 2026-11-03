@@ -278,21 +278,33 @@ class FileExportService {
     required String fileName,
     required Future<T> Function(String path) action,
   }) async {
-    final tempRoot = await getTemporaryDirectory();
-    final exportDirectory = Directory(p.join(tempRoot.path, 'exports'));
+    final exportDirectory = await _temporaryOutputRoot();
     await exportDirectory.create(recursive: true);
-    final suffix = DateTime.now().microsecondsSinceEpoch;
-    final temporaryFile = File(
-      p.join(exportDirectory.path, '${suffix}_${_safeFileName(fileName)}'),
-    );
+    // A unique directory lets the leaf keep its plain name without a prefix.
+    final workDirectory = await exportDirectory.createTemp();
     try {
-      return await action(temporaryFile.path);
+      return await action(p.join(workDirectory.path, _safeFileName(fileName)));
     } finally {
-      if (await temporaryFile.exists()) {
-        await temporaryFile.delete();
+      await workDirectory.delete(recursive: true);
+    }
+  }
+
+  /// Call at startup: no export is running yet, so every entry is a leftover
+  /// of a process that exited inside [withTemporaryOutput].
+  static Future<void> cleanupTemporaryOutputs() async {
+    final exportDirectory = await _temporaryOutputRoot();
+    if (!await exportDirectory.exists()) return;
+    await for (final entity in exportDirectory.list(followLinks: false)) {
+      try {
+        await entity.delete(recursive: true);
+      } on FileSystemException {
+        // A locked leftover is retried on the next launch.
       }
     }
   }
+
+  static Future<Directory> _temporaryOutputRoot() async =>
+      Directory(p.join((await getTemporaryDirectory()).path, 'exports'));
 
   static Future<String?> _withTemporaryFile({
     required Uint8List bytes,
@@ -309,8 +321,9 @@ class FileExportService {
   }
 
   /// iOS 的「另存为」等价通道：先写到应用私有临时目录里一个**文件名干净**的暂存
-  /// 文件（单独建一层目录，这样文件名不用像 [withTemporaryOutput] 那样加时间戳
-  /// 前缀，用户在「文件」App 里看到的就是期望的名字），再交给系统分享面板。
+  /// 文件（与 [withTemporaryOutput] 一样单独建一层唯一目录，用户在「文件」App
+  /// 里看到的就是期望的名字），再交给系统分享面板。进程中途退出留下的暂存目录
+  /// 由启动时的 [cleanupTemporaryOutputs] 统一清理。
   ///
   /// 返回值语义与 Android 分支一致：非 null 表示导出成功。Android 返回的是
   /// SAF 的 `content://` URI，同样不是可再次打开的本地路径；iOS 返回的是暂存
@@ -322,15 +335,9 @@ class FileExportService {
     required Future<void> Function(File target) writeContent,
   }) async {
     final safeName = _safeFileName(fileName);
-    final tempRoot = await getTemporaryDirectory();
-    final stagingDirectory = Directory(
-      p.join(
-        tempRoot.path,
-        'exports',
-        'share_${DateTime.now().microsecondsSinceEpoch}',
-      ),
-    );
-    await stagingDirectory.create(recursive: true);
+    final exportDirectory = await _temporaryOutputRoot();
+    await exportDirectory.create(recursive: true);
+    final stagingDirectory = await exportDirectory.createTemp('share_');
     final stagedFile = File(p.join(stagingDirectory.path, safeName));
     try {
       await writeContent(stagedFile);
@@ -348,22 +355,8 @@ class FileExportService {
     }
   }
 
-  static String _safeFileName(String fileName) {
-    final leafName = p.basename(fileName);
-    final rawExtension = p.extension(leafName);
-    final extension = RegExp(r'^\.[A-Za-z0-9]{1,24}$').hasMatch(rawExtension)
-        ? rawExtension.toLowerCase()
-        : '';
-    final baseName = extension.isEmpty
-        ? leafName
-        : p.basenameWithoutExtension(leafName);
-    final safeBaseName = FileNameSanitizer.sanitize(
-      baseName,
-      fallback: 'export',
-      maxLength: 120,
-    );
-    return '$safeBaseName$extension';
-  }
+  static String _safeFileName(String fileName) =>
+      FileNameSanitizer.fileName(fileName, fallback: 'export');
 
   static Future<String?> _pickDesktopSavePath({
     required String dialogTitle,

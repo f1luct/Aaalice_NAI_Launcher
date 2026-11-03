@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/autocomplete/autocomplete_settings.dart'
+    show replaceUnderscoresPreferenceProvider;
 import '../../../data/models/character/character_prompt.dart';
 import '../../../data/models/image/image_params.dart' show ImageParamsExtension;
 import '../../adaptive/adaptive_presenter.dart';
@@ -222,6 +224,10 @@ class _CharacterPromptEditorState extends ConsumerState<CharacterPromptEditor> {
     final enableSdSyntaxAutoConvert = ref.watch(
       sdSyntaxAutoConvertSettingsProvider,
     );
+    final separateNumericWeightClosing = ref.watch(
+      separateNumericWeightClosingSettingsProvider,
+    );
+    final replaceUnderscores = ref.watch(replaceUnderscoresPreferenceProvider);
 
     final isNegative = _tabIndex == 1;
     // 模型固定生成参数时角色负向提示词不会发送，只读保留。
@@ -239,6 +245,8 @@ class _CharacterPromptEditorState extends ConsumerState<CharacterPromptEditor> {
       enableAutoFormat: enableAutoFormat,
       enableSyntaxHighlight: enableHighlight,
       enableSdSyntaxAutoConvert: enableSdSyntaxAutoConvert,
+      separateNumericWeightClosing: separateNumericWeightClosing,
+      replaceUnderscores: replaceUnderscores,
       showClearButton: false,
       clearNeedsConfirm: false,
     );

@@ -3,7 +3,6 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image/image.dart' as img;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../core/constants/api_constants.dart';
@@ -13,6 +12,8 @@ import '../../../core/network/critical_network_activity.dart';
 import '../../../core/network/js_compatible_json.dart';
 import '../../../core/network/nai_api_endpoint_service.dart';
 import '../../../core/utils/app_logger.dart';
+import '../../../core/utils/decoded_image_size.dart';
+import '../../../core/utils/exif_orientation.dart';
 import '../../../core/utils/zip_utils.dart';
 
 part 'nai_image_enhancement_api_service.g.dart';
@@ -61,11 +62,12 @@ class NAIImageEnhancementApiService {
     int scale = 2,
     void Function(int, int)? onProgress,
   }) async {
+    final upload = await ExifOrientation.bakeToPngAsync(image);
     final activity = _networkActivity.acquire(
       CriticalNetworkActivityType.cloudUpscale,
     );
     try {
-      final body = _buildImageToolMultipart(image, <String, dynamic>{
+      final body = _buildImageToolMultipart(upload, <String, dynamic>{
         'image': 'image',
         'model': _upscaleModel,
         'declared_blur_sigma': _upscaleDeclaredBlurSigma,
@@ -81,7 +83,7 @@ class NAIImageEnhancementApiService {
         onReceiveProgress: onProgress,
       );
 
-      return _extractUpscaleResult(response.data as Uint8List);
+      return await _extractUpscaleResult(response.data as Uint8List);
     } on DioException catch (e) {
       final status = e.response?.statusCode;
       const legacyFallbackStatuses = {400, 404, 405, 422};
@@ -93,7 +95,12 @@ class NAIImageEnhancementApiService {
         'Upscale v2 rejected with $status, falling back to legacy format',
         'NAIEnhancement',
       );
-      return _upscaleImageLegacy(image, scale: scale, onProgress: onProgress);
+      // 不 await 时 finally 会在回退请求完成前释放租约
+      return await _upscaleImageLegacy(
+        upload,
+        scale: scale,
+        onProgress: onProgress,
+      );
     } finally {
       activity.release();
     }
@@ -105,18 +112,15 @@ class NAIImageEnhancementApiService {
     void Function(int, int)? onProgress,
   }) async {
     try {
-      final decoded = img.decodeImage(image);
-      if (decoded == null) {
-        throw Exception('无法解析图像尺寸');
-      }
+      final (width, height) = await _readImageSize(image);
 
       final response = await _dio.post(
         _endpointService.mainUrl(ApiConstants.upscaleEndpoint),
         data: {
           'image': base64Encode(image),
           'scale': scale,
-          'width': decoded.width,
-          'height': decoded.height,
+          'width': width,
+          'height': height,
         },
         options: Options(
           responseType: ResponseType.bytes,
@@ -125,15 +129,23 @@ class NAIImageEnhancementApiService {
         onReceiveProgress: onProgress,
       );
 
-      return _extractUpscaleResult(response.data as Uint8List);
+      return await _extractUpscaleResult(response.data as Uint8List);
     } on DioException catch (e) {
       AppLogger.w('Legacy upscale failed: ${e.message}', 'NAIEnhancement');
       throw Exception('图像放大失败: ${_mapDioError(e)}');
     }
   }
 
-  Uint8List _extractUpscaleResult(Uint8List raw) {
-    final images = ZipUtils.extractAllImages(raw);
+  static Future<(int, int)> _readImageSize(Uint8List image) async {
+    final size = await DecodedImageSize.read(image);
+    if (size == null) {
+      throw Exception('无法解析图像尺寸');
+    }
+    return size;
+  }
+
+  Future<Uint8List> _extractUpscaleResult(Uint8List raw) async {
+    final images = await ZipUtils.extractAllImagesAsync(raw);
     if (images.isNotEmpty) return images.first;
     return raw;
   }
@@ -167,11 +179,12 @@ class NAIImageEnhancementApiService {
     required String model,
     double informationExtracted = 1.0,
   }) async {
+    final upload = await ExifOrientation.bakeToPngAsync(image);
     final activity = _networkActivity.acquire(
       CriticalNetworkActivityType.vibeEncoding,
     );
     try {
-      final body = _buildImageToolMultipart(image, <String, dynamic>{
+      final body = _buildImageToolMultipart(upload, <String, dynamic>{
         'image': 'image',
         'information_extracted': informationExtracted,
         'model': model,
@@ -202,25 +215,23 @@ class NAIImageEnhancementApiService {
     String? prompt,
     int defry = 0,
   }) async {
+    final upload = await ExifOrientation.bakeToPngAsync(image);
     final activity = _networkActivity.acquire(
       CriticalNetworkActivityType.directorTool,
     );
     try {
-      final decoded = img.decodeImage(image);
-      if (decoded == null) {
-        throw Exception('无法解析图像尺寸');
-      }
+      final (width, height) = await _readImageSize(upload);
 
       // 官网只有上色与表情工具带提示词和 defry，上色的空提示词也照发。
       final hasPromptControls =
           reqType == _reqTypeColorize || reqType == _reqTypeEmotion;
-      final body = _buildImageToolMultipart(image, <String, dynamic>{
+      final body = _buildImageToolMultipart(upload, <String, dynamic>{
         'req_type': reqType,
         'use_new_shared_trial': true,
         if (hasPromptControls) 'prompt': prompt ?? '',
         if (hasPromptControls) 'defry': defry.clamp(0, 5),
-        'width': decoded.width,
-        'height': decoded.height,
+        'width': width,
+        'height': height,
         'image': 'image',
       });
 
@@ -233,7 +244,9 @@ class NAIImageEnhancementApiService {
         ),
       );
 
-      final images = ZipUtils.extractAllImages(response.data as Uint8List);
+      final images = await ZipUtils.extractAllImagesAsync(
+        response.data as Uint8List,
+      );
       if (images.isEmpty) {
         throw Exception('No images found in augment response');
       }
@@ -359,18 +372,9 @@ class NAIImageEnhancementApiService {
 }
 
 /// NAIImageEnhancementApiService Provider
-///
-/// 偏离上游：上游这里取的是通用 `dioClientProvider`，而通用 client 在没有系统
-/// 代理时会切到 `Http2Adapter`，api.novelai.net 上该适配器连接异常（表现为接口
-/// 直接失败、错误信息只剩"未知错误"）。桌面端默认经系统代理走 HTTP/1.1，所以
-/// 这条路径在桌面永远不会暴露；移动端默认直连，放大 / 增强 / Vibe 编码 /
-/// Director Tools 全部走这里，一碰就炸。
-/// 因此固定使用 `imageGenerationDioClientProvider`（始终是可中断的 HTTP/1.1
-/// 默认适配器），与图像生成接口保持同一条连接形态。
-/// 跟上游时请勿把这行"对齐"回 dioClientProvider。
 @riverpod
 NAIImageEnhancementApiService naiImageEnhancementApiService(Ref ref) {
-  final dio = ref.watch(imageGenerationDioClientProvider);
+  final dio = ref.watch(dioClientProvider);
   final endpointService = ref.watch(naiApiEndpointServiceProvider);
   return NAIImageEnhancementApiService(dio, endpointService);
 }

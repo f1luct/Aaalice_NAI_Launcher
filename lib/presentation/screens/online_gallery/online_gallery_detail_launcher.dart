@@ -20,7 +20,6 @@ import '../../../data/models/online_gallery/gallery_prompt_projection.dart';
 import '../../../data/models/online_gallery/gallery_source.dart';
 import '../../../data/models/queue/replication_task.dart';
 import '../../adaptive/adaptive_presenter.dart';
-import '../../providers/character_prompt_provider.dart';
 import '../../providers/online_gallery_output_filter_provider.dart';
 import '../../providers/online_gallery_prompt_tag_settings_provider.dart';
 import '../../providers/online_gallery_provider.dart';
@@ -50,9 +49,6 @@ class OnlineGalleryDetailLauncher {
   final OnlineGalleryScreenController? controller;
   static final Set<String> _standalonePendingDetails = <String>{};
 
-  OnlineGalleryNotifier get _galleryNotifier =>
-      ref.read(onlineGalleryNotifierProvider.notifier);
-
   Future<void> show(
     BuildContext context,
     GalleryItem item, {
@@ -61,6 +57,7 @@ class OnlineGalleryDetailLauncher {
     final pendingDetails =
         controller?.pendingGalleryDetails ?? _standalonePendingDetails;
     if (!pendingDetails.add(item.stableKey)) return;
+    final galleryNotifier = ref.read(onlineGalleryNotifierProvider.notifier);
     try {
       final detail =
           preloadedDetail ??
@@ -68,9 +65,7 @@ class OnlineGalleryDetailLauncher {
       if (detail == null) return;
       if (item.sourceId == GallerySourceId.quickTagCloud) {
         try {
-          await ref
-              .read(onlineGalleryNotifierProvider.notifier)
-              .recordQuickTagCloudViewed(item);
+          await galleryNotifier.recordQuickTagCloudViewed(item);
         } catch (error, stack) {
           AppLogger.e(
             'Failed to record QuickTagCloud history',
@@ -80,7 +75,8 @@ class OnlineGalleryDetailLauncher {
           );
         }
       }
-      if (!context.mounted) return;
+      // 调用方的 context 可能不在持有 ref 的子树里
+      if (!context.mounted || !this.context.mounted) return;
       final l10n = context.l10n;
       final galleryState = ref.read(onlineGalleryNotifierProvider);
       final projection = const GalleryPromptProjectionService().project(
@@ -90,9 +86,11 @@ class OnlineGalleryDetailLauncher {
         outputFilter: ref.read(onlineGalleryOutputFilterProvider),
       );
       final stableKey = item.stableKey;
-      final isFavorited = ref
-          .read(onlineGalleryNotifierProvider.notifier)
-          .isFavorited(item);
+      final isFavorited = galleryNotifier.isFavorited(item);
+      final watermarkEnabled = ref
+          .read(watermarkSettingsProvider)
+          .configuration
+          .enabled;
       await AdaptivePresenter.showForm<void>(
         context: context,
         showHeader: false,
@@ -193,15 +191,14 @@ class OnlineGalleryDetailLauncher {
           ),
           onDownloadCurrentOriginal: (media) =>
               _downloadCodexMedia(context, item, media),
-          onDownloadAndWatermark:
-              ref.read(watermarkSettingsProvider).configuration.enabled
+          onDownloadAndWatermark: watermarkEnabled
               ? (media) => _downloadAndWatermark(context, item, media)
               : null,
           onTagSearch: (tag) {
             controller?.searchController.text = tag;
-            _galleryNotifier.search(tag);
+            galleryNotifier.search(tag);
           },
-          onBlacklistChanged: () => _galleryNotifier.refresh(),
+          onBlacklistChanged: () => galleryNotifier.refresh(),
           // 【偏离上游：上游无条件传这个回调】
           // 「下载全部媒体」要先选一个输出目录再批量写盘，iOS 上
           // FileExportService.pickExportDirectory 只能返回 null，按钮点了没反应。
@@ -233,6 +230,7 @@ class OnlineGalleryDetailLauncher {
     BuildContext context,
     GalleryItem item,
   ) async {
+    final galleryNotifier = ref.read(onlineGalleryNotifierProvider.notifier);
     final shown = Completer<BuildContext>();
     final cancelled = Completer<void>();
     var dismissRequested = false;
@@ -259,10 +257,10 @@ class OnlineGalleryDetailLauncher {
     final dialogContext = await shown.future;
     try {
       final detail = await Future.any<GalleryDetail?>([
-        _galleryNotifier.loadDetail(item),
+        galleryNotifier.loadDetail(item),
         cancelled.future.then<GalleryDetail?>((_) => null),
       ]);
-      if (detail == null) _galleryNotifier.cancelDetail(item);
+      if (detail == null) galleryNotifier.cancelDetail(item);
       return detail;
     } finally {
       if (!dismissRequested && dialogContext.mounted) {
@@ -334,18 +332,17 @@ class OnlineGalleryDetailLauncher {
       AppToast.info(dialogContext, dialogContext.l10n.onlineGallery_noImageUrl);
       return;
     }
+    final reversePrompt = ref.read(reversePromptProvider.notifier);
     try {
       final file = await OnlineGalleryImageCacheManager.instance.getSingleFile(
         url,
         key: onlineGalleryImageCacheKeyForUrl(url),
         headers: onlineGalleryImageHeadersForUrl(url),
       );
-      await ref
-          .read(reversePromptProvider.notifier)
-          .addImage(
-            await file.readAsBytes(),
-            name: '${item.sourceId.key}_${item.sourceWorkId}',
-          );
+      await reversePrompt.addImage(
+        await file.readAsBytes(),
+        name: '${item.sourceId.key}_${item.sourceWorkId}',
+      );
       if (!context.mounted || !dialogContext.mounted) return;
       Navigator.of(dialogContext, rootNavigator: true).pop();
       context.go('/');
@@ -500,25 +497,25 @@ class OnlineGalleryDetailLauncher {
     BuildContext dialogContext,
     GalleryItem item,
     GalleryPromptProjection projection, {
+    required GenerationPromptTransferService promptTransfer,
     GenerationTransferConfiguration? configuration,
     Set<GenerationTransferSetting>? configurationSettings,
   }) {
-    ref
-        .read(characterPromptNotifierProvider.notifier)
-        .replaceAll(_codexCharacters(item, projection));
-    ref
-        .read(generationPromptTransferServiceProvider)
-        .replaceMainPrompt(
-          prompt: projection.positivePrompt,
-          negativePrompt: projection.negativePrompt,
-          configuration: configuration,
-          configurationSettings: configurationSettings,
-          // 偏离上游：上游一律做 SD→NAI 转换 + 格式化。AI TAG 的提示词直接来自
-          // NovelAI 元数据，本身就是 NAI 原生语法，再转一次会把自然语言描述压成
-          // 下划线串、并改写坏 `[...]` 降权。booru 系来源仍走上游的归一化。
-          raw: item.sourceId == GallerySourceId.aiTag,
-        );
+    // 偏离上游：上游一律做 SD→NAI 转换 + 格式化。AI TAG 的提示词直接来自
+    // NovelAI 元数据，本身就是 NAI 原生语法，再转一次会把自然语言描述压成
+    // 下划线串、并改写坏 `[...]` 降权。booru 系来源仍走上游的归一化。
+    final raw = item.sourceId == GallerySourceId.aiTag;
+    promptTransfer
+      ..replaceCharacterPrompts(_codexCharacters(item, projection), raw: raw)
+      ..replaceMainPrompt(
+        prompt: projection.positivePrompt,
+        negativePrompt: projection.negativePrompt,
+        configuration: configuration,
+        configurationSettings: configurationSettings,
+        raw: raw,
+      );
     Navigator.of(dialogContext, rootNavigator: true).pop();
+    if (!context.mounted) return;
     context.go('/');
     AppToast.success(context, context.l10n.onlineGallery_sentToTextToImage);
   }
@@ -529,6 +526,7 @@ class OnlineGalleryDetailLauncher {
     GalleryPromptProjection projection,
     GalleryMedia? media,
   ) async {
+    final promptTransfer = ref.read(generationPromptTransferServiceProvider);
     final configuration = item.sourceId == GallerySourceId.aiTag
         ? _replacementConfigurationFor(media)
         : null;
@@ -544,6 +542,7 @@ class OnlineGalleryDetailLauncher {
       dialogContext,
       item,
       projection,
+      promptTransfer: promptTransfer,
       configuration: configuration,
       configurationSettings: selectedSettings,
     );
@@ -572,28 +571,28 @@ class OnlineGalleryDetailLauncher {
           character.negativePrompt.trim().isNotEmpty,
     );
     if (prompt.isEmpty && negativePrompt.isEmpty && !hasCharacterPrompt) return;
+    final queueNotifier = ref.read(replicationQueueNotifierProvider.notifier);
     try {
-      final success = await ref
-          .read(replicationQueueNotifierProvider.notifier)
-          .add(
-            ReplicationTask.create(
-              prompt: prompt,
-              negativePrompt: negativePrompt,
-              applyNegativePrompt: negativePrompt.isNotEmpty,
-              thumbnailUrl: item.previewUrl,
-              source: ReplicationTaskSource.online,
-              characterPrompts: [
-                for (final character in projection.characterPrompts)
-                  ReplicationCharacterPromptSnapshot(
-                    prompt: character.prompt,
-                    negativePrompt: character.negativePrompt,
-                    positionX: character.positionX,
-                    positionY: character.positionY,
-                  ),
-              ],
-            ),
-          );
-      if (!dialogContext.mounted) return;
+      final success = await queueNotifier.add(
+        ReplicationTask.create(
+          prompt: prompt,
+          negativePrompt: negativePrompt,
+          applyNegativePrompt: negativePrompt.isNotEmpty,
+          thumbnailUrl: item.previewUrl,
+          source: ReplicationTaskSource.online,
+          characterPrompts: [
+            for (final character in projection.characterPrompts)
+              ReplicationCharacterPromptSnapshot(
+                prompt: character.prompt,
+                negativePrompt: character.negativePrompt,
+                positionX: character.positionX,
+                positionY: character.positionY,
+              ),
+          ],
+        ),
+      );
+      // 对话框挂在根导航器上，可能比持有 ref 的组件存活更久
+      if (!dialogContext.mounted || !context.mounted) return;
       if (success) {
         final count = ref.read(
           replicationQueueNotifierProvider.select((state) => state.count),
@@ -709,9 +708,10 @@ class OnlineGalleryDetailLauncher {
 
   /// 处理收藏切换
   Future<bool> toggleFavorite(BuildContext context, GalleryItem post) async {
-    final wasFavorited = _galleryNotifier.isFavorited(post);
+    final galleryNotifier = ref.read(onlineGalleryNotifierProvider.notifier);
+    final wasFavorited = galleryNotifier.isFavorited(post);
     try {
-      final success = await _galleryNotifier.toggleFavorite(post);
+      final success = await galleryNotifier.toggleFavorite(post);
       if (context.mounted) {
         if (success) {
           AppToast.info(

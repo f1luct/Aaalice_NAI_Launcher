@@ -11,14 +11,17 @@ import 'package:nai_launcher/core/agent/agent_types.dart';
 import 'package:nai_launcher/core/agent/resources/agent_chat_resource_reference.dart';
 import 'package:nai_launcher/core/agent/resources/agent_chat_resource_reference_codec.dart';
 import 'package:nai_launcher/core/utils/display_thumbnail_utils.dart';
+import 'package:nai_launcher/core/utils/inpaint_mask_utils.dart';
 import 'package:nai_launcher/data/models/image/image_params.dart';
 import 'package:nai_launcher/data/models/inpaint/inpaint_draft.dart';
 import 'package:nai_launcher/data/models/inpaint/inpaint_draft_status.dart';
 import 'package:nai_launcher/data/services/inpaint_draft_file_repository.dart';
 import 'package:nai_launcher/presentation/agent_chat/services/agent_image_observation_ledger.dart';
 import 'package:nai_launcher/presentation/agent_chat/services/manual_inpaint_toolbox.dart';
-import 'package:nai_launcher/presentation/providers/generation/generation_params_notifier.dart';
+import 'package:nai_launcher/presentation/providers/image_generation_provider.dart';
 import 'package:nai_launcher/presentation/widgets/image_editor/image_editor_types.dart';
+
+import '../../../helpers/exif_orientation_fixture.dart';
 
 final _refProvider = Provider<Ref>((ref) => ref);
 
@@ -190,6 +193,59 @@ void main() {
 
     expect(closed, isTrue);
     expect((await repository.get(id))!.status, InpaintDraftStatus.cancelled);
+  });
+
+  test('provider submission requests random prompt bypass', () async {
+    final sourceFile = File('${root.path}/source.png');
+    await sourceFile.writeAsBytes(_png(value: 30));
+    final fake = _RecordingImageGenerationNotifier();
+    final providerContainer = ProviderContainer(
+      overrides: [
+        generationParamsNotifierProvider.overrideWith(
+          _TestGenerationParamsNotifier.new,
+        ),
+        imageGenerationNotifierProvider.overrideWith(() => fake),
+      ],
+    );
+    addTearDown(providerContainer.dispose);
+    final editorResult = Completer<ImageEditorResult?>();
+    final toolbox = ManualInpaintToolbox(
+      providerContainer.read(_refProvider),
+      supportDirectory: root,
+      anlasEstimator: (_, _) => 0,
+      workspaceDir: root.path,
+      repository: repository,
+      editorLauncher: (_, __, ___) => ManualInpaintEditorSession(
+        result: editorResult.future,
+        close: () {},
+      ),
+    );
+    final tools = {for (final tool in toolbox.tools()) tool.name: tool};
+    final created = _json(
+      await tools['create_manual_inpaint_draft']!.execute('create', {
+        'source_image': sourceFile.path,
+        'prompt': 'repair face',
+      }),
+    );
+    final id = (created['draft'] as Map)['draftId'] as String;
+    editorResult.complete(
+      ImageEditorResult(
+        maskImage: _png(value: 255),
+        inpaintSourceImage: _png(value: 30),
+        hasMaskChanges: true,
+      ),
+    );
+    await _waitForStatus(repository, id, InpaintDraftStatus.ready);
+
+    final submitted = await tools['submit_manual_inpaint_draft']!.execute(
+      'submit',
+      {'draft_id': id},
+    );
+
+    expect(submitted.isError, isFalse);
+    await _waitForStatus(repository, id, InpaintDraftStatus.submitted);
+    expect(fake.prompt, 'repair face');
+    expect(fake.bypassRandomPrompt, isTrue);
   });
 
   test(
@@ -549,6 +605,99 @@ void main() {
       expect(handoff!.rect, isNotNull);
     });
 
+    test('drafts and loads an EXIF-rotated jpeg at its decoded size', () async {
+      final rotated = img.Image(width: 96, height: 64)
+        ..exif.imageIfd.orientation = 6;
+      img.fill(rotated, color: img.ColorRgb8(40, 40, 40));
+      final jpegFile = File('${workspace.path}/rotated.jpg');
+      await jpegFile.writeAsBytes(img.encodeJpg(rotated));
+      (int, int)? handoffSize;
+      final toolbox = await buildToolbox();
+      toolbox.configurePanelHandoff(({
+        required source,
+        required sourceWidth,
+        required sourceHeight,
+        required mask,
+        required focusedInpaintEnabled,
+        required focusedSelectionRect,
+        required minimumContextMegaPixels,
+        required sourceIsOutpaint,
+      }) async {
+        handoffSize = (sourceWidth, sourceHeight);
+      });
+      final tools = {for (final tool in toolbox.tools()) tool.name: tool};
+      markObservedPath(jpegFile.path);
+
+      final created = await tools['create_inpaint_mask']!.execute('r1', {
+        'source_image': 'rotated.jpg',
+        'prompt': 'fix the hand',
+        'focused': false,
+        'preview': false,
+        'regions': const [
+          {'shape': 'rect', 'x': 0.4, 'y': 0.4, 'width': 0.2, 'height': 0.2},
+        ],
+      });
+
+      expect(created.details['ok'], isTrue, reason: '${created.details}');
+      final draftId = created.details['draft']['draftId'] as String;
+      final mask = img.decodeImage((await repository.readMask(draftId))!)!;
+      expect((mask.width, mask.height), (64, 96));
+
+      final loaded = await tools['load_inpaint_draft_into_panel']!.execute(
+        'r2',
+        {'draft_id': draftId},
+      );
+
+      expect(loaded.details['ok'], isTrue);
+      expect(handoffSize, (64, 96));
+    });
+
+    test('drafts an EXIF-rotated webp at its displayed size', () async {
+      final webpFile = File('${workspace.path}/rotated.webp');
+      await webpFile.writeAsBytes(
+        orientedMarkedWebp(width: 96, height: 64, orientation: 6),
+      );
+      (int, int)? handoffSize;
+      final toolbox = await buildToolbox();
+      toolbox.configurePanelHandoff(({
+        required source,
+        required sourceWidth,
+        required sourceHeight,
+        required mask,
+        required focusedInpaintEnabled,
+        required focusedSelectionRect,
+        required minimumContextMegaPixels,
+        required sourceIsOutpaint,
+      }) async {
+        handoffSize = (sourceWidth, sourceHeight);
+      });
+      final tools = {for (final tool in toolbox.tools()) tool.name: tool};
+      markObservedPath(webpFile.path);
+
+      final created = await tools['create_inpaint_mask']!.execute('w1', {
+        'source_image': 'rotated.webp',
+        'prompt': 'fix the hand',
+        'focused': false,
+        'preview': false,
+        'regions': const [
+          {'shape': 'rect', 'x': 0.4, 'y': 0.4, 'width': 0.2, 'height': 0.2},
+        ],
+      });
+
+      expect(created.details['ok'], isTrue, reason: '${created.details}');
+      final draftId = created.details['draft']['draftId'] as String;
+      final mask = img.decodeImage((await repository.readMask(draftId))!)!;
+      expect((mask.width, mask.height), (64, 96));
+
+      final loaded = await tools['load_inpaint_draft_into_panel']!.execute(
+        'w2',
+        {'draft_id': draftId},
+      );
+
+      expect(loaded.details['ok'], isTrue);
+      expect(handoffSize, (64, 96));
+    });
+
     test('fails cleanly for malformed and missing draft ids', () async {
       final toolbox = await buildToolbox();
       toolbox.configurePanelHandoff(
@@ -598,7 +747,43 @@ void main() {
         final drafts = await repository.list();
         expect(drafts, hasLength(1));
         expect(drafts.single.status, InpaintDraftStatus.ready);
-        expect(await repository.readMask(drafts.single.id), isNotNull);
+        final mask = InpaintMaskUtils.decodeBinaryMask(
+          (await repository.readMask(drafts.single.id))!,
+        )!;
+        final coverage =
+            InpaintMaskUtils.countMaskedPixels(mask.mask) /
+            (mask.width * mask.height);
+        expect(
+          result.details['maskCoverage'],
+          double.parse(coverage.toStringAsFixed(4)),
+        );
+      },
+    );
+
+    test(
+      'subtract-only regions report an empty mask without a draft',
+      () async {
+        final toolbox = await buildToolbox();
+        final tools = {for (final tool in toolbox.tools()) tool.name: tool};
+        markObservedPath(sourceFile.path);
+
+        final result = await tools['create_inpaint_mask']!.execute('c5', {
+          'source_image': 'source.png',
+          'prompt': 'remove nothing',
+          'regions': const [
+            {
+              'shape': 'rect',
+              'mode': 'subtract',
+              'x': 0.2,
+              'y': 0.2,
+              'width': 0.3,
+              'height': 0.3,
+            },
+          ],
+        });
+
+        expect(result.details['code'], 'empty_mask');
+        expect(await repository.list(), isEmpty);
       },
     );
   });
@@ -902,11 +1087,10 @@ void main() {
         'contextPadding': 120,
       });
       expect(outpainted.parameterSnapshot['_agentSourceIsOutpaint'], isTrue);
-      expect(
-        pricedSizes.last,
-        (768, 512),
-        reason: 'without focus the whole outpainted canvas is priced',
-      );
+      expect(pricedSizes.last, (
+        768,
+        512,
+      ), reason: 'without focus the whole outpainted canvas is priced');
     });
   });
 }
@@ -963,4 +1147,25 @@ ImageEditorResult _inpaintResult(
 class _TestGenerationParamsNotifier extends GenerationParamsNotifier {
   @override
   ImageParams build() => const ImageParams(negativePrompt: 'bad anatomy');
+}
+
+class _RecordingImageGenerationNotifier extends ImageGenerationNotifier {
+  String? prompt;
+  bool? bypassRandomPrompt;
+
+  @override
+  ImageGenerationState build() => const ImageGenerationState();
+
+  @override
+  Future<void> generate(
+    ImageParams params, {
+    int? batchSizeOverride,
+    bool preserveCharacterSnapshot = false,
+    GenerationFocusedSnapshot? focusedOverride,
+    bool bypassRandomPrompt = false,
+  }) async {
+    prompt = params.prompt;
+    this.bypassRandomPrompt = bypassRandomPrompt;
+    state = const ImageGenerationState(status: GenerationStatus.completed);
+  }
 }

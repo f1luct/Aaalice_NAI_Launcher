@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nai_launcher/core/cache/local_file_image.dart';
 import 'package:nai_launcher/presentation/widgets/common/image_detail/file_image_detail_data.dart';
 import 'package:nai_launcher/presentation/widgets/common/image_detail/image_detail_data.dart';
 
@@ -28,7 +29,8 @@ void main() {
       ).getPlaceholderProvider();
 
       final resize = placeholder as ResizeImage;
-      expect((resize.imageProvider as FileImage).file.path, file.path);
+      // 与原图一样按文件身份缓存，原地覆盖后占位不会先闪出旧像素。
+      expect(resize.imageProvider, LocalFileImage(file.path));
       // 降采样目标必须小于 getImageProvider 的 4096 上限，否则占位没有意义。
       expect(resize.width, lessThan(4096));
       expect(resize.height, lessThan(4096));

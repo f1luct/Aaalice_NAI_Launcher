@@ -26,15 +26,12 @@ import 'package:nai_launcher/core/utils/file_explorer_utils.dart';
 import 'package:nai_launcher/core/utils/nai_resolution_adapter.dart';
 import 'package:nai_launcher/data/models/fixed_tag/fixed_tag_entry.dart';
 import 'package:nai_launcher/data/models/gallery/gallery_statistics.dart';
-import 'package:nai_launcher/data/models/gallery/local_image_record.dart';
 import 'package:nai_launcher/data/models/gallery/nai_image_metadata.dart';
 import 'package:nai_launcher/data/models/image/image_params.dart'
     show ImageParams;
 import 'package:nai_launcher/data/models/tag/local_tag.dart';
 import 'package:nai_launcher/data/models/vibe/vibe_library_entry.dart';
 import 'package:nai_launcher/data/models/vibe/vibe_reference.dart';
-import 'package:nai_launcher/data/services/local_onnx_tagger_service.dart';
-import 'package:nai_launcher/data/services/statistics_service.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:nai_launcher/presentation/providers/fixed_tags_provider.dart';
 import 'package:nai_launcher/presentation/providers/generation/generation_params_notifier.dart';
@@ -66,6 +63,8 @@ import 'package:nai_launcher/presentation/widgets/metadata/metadata_import_dialo
 import 'package:nai_launcher/presentation/widgets/prompt/unified/unified_prompt_config.dart';
 import 'package:nai_launcher/presentation/widgets/prompt/unified/unified_prompt_input.dart';
 import 'package:nai_launcher/presentation/widgets/shortcuts/shortcut_aware_widget.dart';
+
+import 'helpers/grayscale_png_fixture.dart';
 
 class _MockDio extends Mock implements Dio {}
 
@@ -1274,28 +1273,6 @@ void main() {
   });
 
   group('Statistics dashboard', () {
-    test('ignores non-positive image dimensions in resolution statistics', () {
-      final service = StatisticsService();
-      final modifiedAt = DateTime(2026);
-
-      final stats = service.calculateStatistics([
-        LocalImageRecord(
-          path: 'zero.png',
-          size: 1024,
-          modifiedAt: modifiedAt,
-          metadata: const NaiImageMetadata(width: 0, height: 0),
-        ),
-        LocalImageRecord(
-          path: 'valid.png',
-          size: 1024,
-          modifiedAt: modifiedAt,
-          metadata: const NaiImageMetadata(width: 1024, height: 1024),
-        ),
-      ]);
-
-      expect(stats.resolutionDistribution.map((r) => r.label), ['1024x1024']);
-    });
-
     testWidgets('aspect ratio card skips invalid cached resolutions', (
       tester,
     ) async {
@@ -2232,6 +2209,22 @@ void main() {
       );
     });
 
+    test(
+      'normalizes single-channel grayscale attachments to gray jpeg',
+      () async {
+        final optimized = await optimizePromptAssistantImagePartForUpload(
+          PromptAssistantImagePart(
+            bytes: grayscalePng(width: 64, height: 48),
+            mimeType: 'image/png',
+          ),
+          normalizeToJpeg: true,
+        );
+
+        expect(optimized.mimeType, 'image/jpeg');
+        expectUniformGray(img.decodeJpg(optimized.bytes)!, 160);
+      },
+    );
+
     test('compresses typed image payload before posting', () async {
       const maxBytes = 20 * 1024;
       final dio = _MockDio();
@@ -2487,41 +2480,6 @@ void main() {
     );
   });
 
-  group('ONNX tagger categories', () {
-    test('keeps only general and character label categories by default', () {
-      expect(
-        const OnnxTaggerLabel(name: '1girl', category: 'General').isGeneral,
-        isTrue,
-      );
-      expect(
-        const OnnxTaggerLabel(
-          name: 'hakurei_reimu',
-          category: 'Character',
-        ).isCharacter,
-        isTrue,
-      );
-      expect(
-        const OnnxTaggerLabel(name: '1girl', category: '0').isGeneral,
-        isTrue,
-      );
-      expect(
-        const OnnxTaggerLabel(name: 'hakurei_reimu', category: '4').isCharacter,
-        isTrue,
-      );
-      expect(
-        const OnnxTaggerLabel(name: 'general', category: 'Rating').isRating,
-        isTrue,
-      );
-      expect(
-        const OnnxTaggerLabel(
-          name: 'artist_name',
-          category: 'Artist',
-        ).labelCategory,
-        OnnxTaggerLabelCategory.other,
-      );
-    });
-  });
-
   group('Prompt injected history', () {
     test('supports external undo and redo for injected prompts', () {
       final history = PromptAssistantHistoryNotifier();
@@ -2567,6 +2525,9 @@ Future<void> _pumpOnlineGalleryScreen(WidgetTester tester) async {
       overrides: [
         onlineGalleryNotifierProvider.overrideWith(
           _FakeOnlineGalleryNotifier.new,
+        ),
+        shortcutConfigNotifierProvider.overrideWith(
+          _FakeShortcutConfigNotifier.new,
         ),
         autocompleteLocalSourcesProvider.overrideWithValue(const [
           _FakeCompletionSource(),

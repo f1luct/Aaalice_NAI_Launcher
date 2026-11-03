@@ -10,6 +10,7 @@ import 'package:nai_launcher/data/models/inpaint/inpaint_draft_status.dart';
 import 'package:nai_launcher/data/services/inpaint_draft_file_repository.dart';
 import 'package:nai_launcher/data/services/inpaint_draft_file_store.dart';
 import 'package:nai_launcher/data/services/inpaint_draft_repository.dart';
+import 'package:nai_launcher/data/services/metadata/hash_calculator.dart';
 import 'package:path/path.dart' as p;
 
 void main() {
@@ -368,6 +369,33 @@ void main() {
       expect(await repository.readSource(prepared.id), edited);
     });
 
+    test('tells same-size large sources apart by checksum', () async {
+      final original = _storedPng(value: 40);
+      final edited = _storedPng(value: 41);
+      expect(edited.length, original.length);
+      expect(
+        original.length,
+        greaterThanOrEqualTo(FileHashCalculator.backgroundHashMinBytes),
+      );
+      final prepared = await repository.prepare(
+        sourceBytes: original,
+        parameterSnapshot: const {},
+        estimatedAnlas: 1,
+      );
+      await repository.beginEditing(prepared.id);
+
+      await repository.cancelWithEditedSource(
+        prepared.id,
+        sourceBytes: edited,
+        parameterSnapshot: const {},
+        estimatedAnlas: 1,
+      );
+
+      expect(await repository.readSource(prepared.id), edited);
+      await repository.reEdit(prepared.id);
+      expect(await repository.readSource(prepared.id), edited);
+    });
+
     test('never rewrites the file the editing metadata points at', () async {
       final prepared = await _prepare(repository, width: 10, height: 6);
       await repository.beginEditing(prepared.id);
@@ -416,6 +444,47 @@ void main() {
     });
   });
 
+  test(
+    'only new assets are fully decoded; stored PNGs are checked by header',
+    () async {
+      final decoded = <Uint8List>[];
+      final counted = InpaintDraftFileRepository(
+        rootDirectory: root,
+        idGenerator: ids.next,
+        clock: () => DateTime.utc(2026, 3, 14, 12),
+        fileStore: InpaintDraftFileStore(
+          decodeImageSize: (bytes) async {
+            decoded.add(bytes);
+            final image = img.decodeImage(bytes);
+            return image == null ? null : (image.width, image.height);
+          },
+        ),
+      );
+      final prepared = await _prepare(counted);
+      await counted.beginEditing(prepared.id);
+      await counted.complete(
+        prepared.id,
+        sourceBytes: _png(value: 60),
+        maskBytes: _png(value: 220),
+        parameterSnapshot: const {},
+        estimatedAnlas: 1,
+      );
+      expect(decoded, hasLength(3));
+      decoded.clear();
+
+      await counted.get(prepared.id);
+      await counted.readSource(prepared.id);
+      await counted.readMask(prepared.id);
+      await counted.beginSubmission(prepared.id);
+      await counted.restoreReady(prepared.id, message: 'rejected');
+      await counted.markFailed(prepared.id, message: 'rejected');
+      final cancelled = await counted.cancel(prepared.id);
+
+      expect(cancelled.status, InpaintDraftStatus.cancelled);
+      expect(decoded, isEmpty);
+    },
+  );
+
   test('detects tampering and never accepts caller-controlled paths', () async {
     final draft = await _prepare(repository);
     final source = File(p.join(root.path, draft.id, 'source.image'));
@@ -453,6 +522,29 @@ void main() {
       throwsArgumentError,
     );
   });
+
+  test('corrupt metadata never quotes the prompt into the error', () async {
+    final draft = await _prepare(repository);
+    final metadataFile = File(p.join(root.path, draft.id, 'metadata.json'));
+    final metadata = await metadataFile.readAsString();
+    await metadataFile.writeAsString(
+      metadata.replaceFirst(
+        '"prompt":"source"',
+        '"prompt":"secret lighthouse keeper" broken',
+      ),
+    );
+
+    await expectLater(
+      repository.get(draft.id),
+      throwsA(
+        isA<InpaintDraftIntegrityException>().having(
+          (error) => '$error',
+          'text',
+          allOf(contains('invalid metadata'), isNot(contains('lighthouse'))),
+        ),
+      ),
+    );
+  });
 }
 
 Future<InpaintDraft> _prepare(
@@ -471,6 +563,13 @@ Uint8List _png({int width = 8, int height = 8, int value = 128}) {
   final image = img.Image(width: width, height: height);
   img.fill(image, color: img.ColorRgb8(value, value, value));
   return Uint8List.fromList(img.encodePng(image));
+}
+
+/// Uncompressed PNG: every fill value encodes to the same byte length.
+Uint8List _storedPng({required int value}) {
+  final image = img.Image(width: 160, height: 160);
+  img.fill(image, color: img.ColorRgb8(value, value, value));
+  return Uint8List.fromList(img.encodePng(image, level: 0));
 }
 
 class _PausingFileStore extends InpaintDraftFileStore {

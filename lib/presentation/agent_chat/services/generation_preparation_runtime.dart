@@ -1,8 +1,8 @@
-import 'dart:typed_data';
-
 import 'package:uuid/uuid.dart';
 
 import '../../../data/models/image/image_params.dart';
+import '../../providers/generation/image_workflow_controller.dart';
+import 'generation_enhance_resolver.dart';
 
 enum GenerationPreparationKind { generate, queue }
 
@@ -30,8 +30,8 @@ class GenerationPreparation {
     required this.arguments,
     this.savePath,
     this.savePathSource,
-    this.sourceImage,
-    this.maskImage,
+    this.enhance,
+    this.enhanceDefaults,
   }) : id = const Uuid().v4(),
        createdAt = DateTime.now();
 
@@ -49,8 +49,11 @@ class GenerationPreparation {
 
   /// null 表示这次既不落盘也不引用原图。
   final GenerationSavePathSource? savePathSource;
-  final Uint8List? sourceImage;
-  final Uint8List? maskImage;
+
+  final GenerationEnhanceSelection? enhance;
+
+  /// 首次准备时的生成页增强偏好，更新时沿用，与 [baseParams] 同理。
+  final EnhanceWorkflowSettings? enhanceDefaults;
   GenerationPreparationStatus status = GenerationPreparationStatus.prepared;
 
   Map<String, dynamic> toJson() {
@@ -93,8 +96,9 @@ class GenerationPreparation {
                 },
             },
         ],
-        if (sourceImage != null) 'has_source_image': true,
-        if (maskImage != null) 'has_mask_image': true,
+        if (request.sourceImage != null) 'has_source_image': true,
+        if (request.maskImage != null) 'has_mask_image': true,
+        if (enhance case final enhance?) 'enhance': enhance.toJson(),
       },
       'confirmation_required':
           status == GenerationPreparationStatus.prepared && estimatedAnlas != 0,

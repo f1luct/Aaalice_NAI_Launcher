@@ -131,20 +131,19 @@ class _WebStyleGenerationLayoutState
     final leftWidth = layoutState.webLeftPanelExpanded
         ? layoutState.webLeftPanelWidth
         : 40.0;
+    final handleExtent = ResizeHandle.extentOf(context);
     final fixedTagsWidth = layoutState.fixedTagsSidebarExpanded
-        ? layoutState.fixedTagsSidebarWidth + ResizeHandle.defaultWidth
+        ? layoutState.fixedTagsSidebarWidth + handleExtent
         : 0.0;
     final occupiedLeadingWidth =
-        leftWidth +
-        (layoutState.webLeftPanelExpanded ? ResizeHandle.defaultWidth : 0.0);
+        leftWidth + (layoutState.webLeftPanelExpanded ? handleExtent : 0.0);
     final sideBySideChatWidth = ref.watch(
       agentChatDockProvider.select((dock) => dock.sideBySideChatWidthDemand),
     );
 
-    return ShortcutAwareWidget(
+    return PageShortcuts(
       contextType: ShortcutContext.generation,
       shortcuts: _shortcuts,
-      autofocus: true,
       child: GenerationWorkspaceRow(
         occupiedLeadingWidth: occupiedLeadingWidth,
         overlayableLeading: const FixedTagsSidebarSlot(),

@@ -29,6 +29,8 @@ import 'package:nai_launcher/presentation/themes/core/layered_surface_style.dart
 import 'package:nai_launcher/presentation/widgets/common/desktop_window_frame.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../../../helpers/adaptive_panel_expectations.dart';
+
 class _NoopDesktopWindowController implements DesktopWindowController {
   @override
   void addListener(WindowListener listener) {}
@@ -451,6 +453,7 @@ void main() {
     );
     expect(find.byType(AlertDialog), findsNothing);
     expect(find.text('OpenAI Chat Completions'), findsOneWidget);
+    expectPanelHeaderScrollsWithContent(tester);
     expect(tester.takeException(), isNull);
 
     final selectedProtocolRect = tester.getRect(
@@ -487,6 +490,39 @@ void main() {
       findsOneWidget,
     );
     expect(tester.takeException(), isNull);
+
+    Future<void> expectFormHeaderScrolls(Finder trigger, String formKey) async {
+      await tester.ensureVisible(trigger);
+      await tester.pumpAndSettle();
+      await tester.tap(trigger);
+      await tester.pumpAndSettle();
+      expect(find.byKey(ValueKey(formKey)), findsOneWidget);
+      expectPanelHeaderScrollsWithContent(tester, reason: formKey);
+      expect(tester.takeException(), isNull, reason: formKey);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byKey(ValueKey(formKey)), findsNothing);
+    }
+
+    await expectFormHeaderScrolls(
+      find.byKey(const ValueKey('model-services-add-model')),
+      'model-services-model-form',
+    );
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.byType(ProviderDetailPage), findsNothing);
+    await tester.tap(find.text('提示词助手'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('新增规则'),
+      200,
+      scrollable: contentScrollable,
+    );
+    await expectFormHeaderScrolls(
+      find.text('新增规则'),
+      'prompt-assistant-rule-dialog',
+    );
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();

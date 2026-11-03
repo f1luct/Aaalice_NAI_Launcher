@@ -7,9 +7,12 @@ import 'package:nai_launcher/core/constants/api_constants.dart';
 import 'package:nai_launcher/core/enums/image_model_mode.dart';
 import 'package:nai_launcher/core/enums/precise_ref_type.dart';
 import 'package:nai_launcher/core/network/request_builders/nai_image_request_builder.dart';
+import 'package:nai_launcher/core/utils/inpaint_mask_utils.dart';
 import 'package:nai_launcher/core/utils/nai_api_utils.dart';
 import 'package:nai_launcher/data/models/image/image_params.dart';
 import 'package:nai_launcher/data/models/vibe/vibe_reference.dart';
+
+import '../../../helpers/exif_orientation_fixture.dart';
 
 void main() {
   test(
@@ -1421,6 +1424,52 @@ void main() {
       },
     );
 
+    test('should reject infill masks that sample to no latent cell', () async {
+      img.Image blackMask({int channels = 4}) {
+        final mask = img.Image(width: 128, height: 128, numChannels: channels);
+        if (channels == 4) {
+          img.fill(mask, color: img.ColorRgba8(0, 0, 0, 255));
+        }
+        return mask;
+      }
+
+      final thinLine = blackMask();
+      for (var y = 0; y < 128; y++) {
+        thinLine.setPixelRgba(10, y, 255, 255, 255, 255);
+      }
+      final lowGrayPluginMask = blackMask(channels: 1);
+      for (var y = 32; y < 96; y++) {
+        for (var x = 32; x < 96; x++) {
+          lowGrayPluginMask.setPixelR(x, y, 39);
+        }
+      }
+      final masks = {
+        'thin line': thinLine,
+        'raw 39 gray selection': lowGrayPluginMask,
+        'all black': blackMask(),
+      };
+
+      for (final entry in masks.entries) {
+        final builder = NAIImageRequestBuilder(
+          params: ImageParams(
+            action: ImageGenerationAction.infill,
+            model: 'nai-diffusion-4-5-full',
+            width: 128,
+            height: 128,
+            sourceImage: _validPngBytes(width: 128, height: 128),
+            maskImage: Uint8List.fromList(img.encodePng(entry.value)),
+          ),
+          encodeVibe: _fakeEncodeVibe,
+        );
+
+        await expectLater(
+          builder.build(sampler: 'k_euler'),
+          throwsA(isA<EmptyInpaintMaskException>()),
+          reason: entry.key,
+        );
+      }
+    });
+
     test(
       'should normalize infill source image to request dimensions',
       () async {
@@ -1430,7 +1479,7 @@ void main() {
           width: 128,
           height: 128,
           sourceImage: _validPngBytes(width: 256, height: 128),
-          maskImage: _validPngBytes(width: 128, height: 128),
+          maskImage: _solidPngBytes(width: 128, height: 128),
         );
 
         final builder = NAIImageRequestBuilder(
@@ -2261,7 +2310,7 @@ void main() {
           action: ImageGenerationAction.infill,
           model: ImageModels.animeDiffusionV5FullMedium,
           sourceImage: _validPngBytes(),
-          maskImage: _validPngBytes(),
+          maskImage: _solidPngBytes(width: 2, height: 2),
         ),
         encodeVibe: _fakeEncodeVibe,
       ).build(sampler: Samplers.kEulerAncestral);
@@ -2339,6 +2388,149 @@ void main() {
           ),
         );
         expect(result.requestData['input'], prompt);
+      }
+    });
+  });
+
+  group('NAIImageRequestBuilder EXIF-oriented sources', () {
+    // 方向 6 显示时顺时针转 90°：存储在左上角的标记出现在右上角
+    const displayedMarker = [false, true, false, false];
+    final formats = <String, Uint8List Function(int orientation)>{
+      'jpeg': (orientation) =>
+          orientedMarkedJpeg(width: 96, height: 64, orientation: orientation),
+      'webp': (orientation) =>
+          orientedMarkedWebp(width: 96, height: 64, orientation: orientation),
+    };
+
+    Future<Map<String, dynamic>> buildSource(
+      ImageGenerationAction action,
+      Uint8List source, {
+      required int width,
+      required int height,
+    }) async {
+      final params = ImageParams(
+        action: action,
+        model: ImageModels.animeDiffusionV45Curated,
+        width: width,
+        height: height,
+        sourceImage: source,
+        maskImage: action == ImageGenerationAction.infill
+            ? _solidPngBytes(width: width, height: height)
+            : null,
+      );
+      final result = await NAIImageRequestBuilder(
+        params: params,
+        encodeVibe: _fakeEncodeVibe,
+      ).build(sampler: 'k_euler');
+      return result.requestParameters;
+    }
+
+    Future<Map<String, dynamic>> buildWith(ImageParams params) async =>
+        (await NAIImageRequestBuilder(
+          params: params,
+          encodeVibe: _fakeEncodeVibe,
+        ).build(sampler: 'k_euler')).requestParameters;
+
+    test('img2img and infill send the displayed pixels as png', () async {
+      for (final MapEntry(key: format, value: source) in formats.entries) {
+        for (final action in [
+          ImageGenerationAction.img2img,
+          ImageGenerationAction.infill,
+        ]) {
+          final reason = '$format ${action.name}';
+          final parameters = await buildSource(
+            action,
+            source(6),
+            width: 64,
+            height: 96,
+          );
+
+          final sent = img.decodePng(
+            base64Decode(parameters['image'] as String),
+          );
+          expect(sent, isNotNull, reason: reason);
+          expect((sent!.width, sent.height), (64, 96), reason: reason);
+          expect(markerCorners(sent), displayedMarker, reason: reason);
+        }
+      }
+    });
+
+    test('unrotated sources keep their exact request bytes', () async {
+      final cases = <String, Uint8List>{
+        for (final MapEntry(key: format, value: source) in formats.entries)
+          '$format orientation 1': source(1),
+        'png': _solidPngBytes(width: 64, height: 96),
+        'webp without exif': plainWebp,
+      };
+
+      for (final MapEntry(key: name, value: source) in cases.entries) {
+        final decoded = img.decodeImage(source)!;
+        final parameters = await buildSource(
+          ImageGenerationAction.img2img,
+          source,
+          width: decoded.width,
+          height: decoded.height,
+        );
+
+        expect(parameters['image'], base64Encode(source), reason: name);
+      }
+    });
+
+    test('V3 raw vibes upload the displayed pixels', () async {
+      for (final MapEntry(key: format, value: source) in formats.entries) {
+        final unrotated = source(1);
+        final parameters = await buildWith(
+          ImageParams(
+            model: ImageModels.animeDiffusionV3,
+            vibeReferencesV4: [
+              for (final (name, bytes) in [
+                ('rotated', source(6)),
+                ('unrotated', unrotated),
+              ])
+                VibeReference(
+                  displayName: name,
+                  vibeEncoding: '',
+                  rawImageData: bytes,
+                  sourceType: VibeSourceType.rawImage,
+                ),
+            ],
+          ),
+        );
+        final uploads = parameters['reference_image_multiple'] as List;
+
+        final rotated = img.decodePng(base64Decode(uploads.first as String))!;
+        expect((rotated.width, rotated.height), (64, 96), reason: format);
+        expect(markerCorners(rotated), displayedMarker, reason: format);
+        expect(uploads.last, base64Encode(unrotated), reason: format);
+      }
+    });
+
+    test('precise references are fitted to the displayed canvas', () async {
+      for (final MapEntry(key: format, value: source) in formats.entries) {
+        for (final (orientation, canvas) in [
+          (1, (1536, 1024)),
+          (6, (1024, 1536)),
+        ]) {
+          final parameters = await buildWith(
+            ImageParams(
+              model: 'nai-diffusion-4-5-full',
+              preciseReferences: [
+                PreciseReference(
+                  image: source(orientation),
+                  type: PreciseRefType.character,
+                ),
+              ],
+            ),
+          );
+          final images = parameters['director_reference_images'] as List;
+
+          final sent = img.decodePng(base64Decode(images.single as String))!;
+          expect(
+            (sent.width, sent.height),
+            canvas,
+            reason: '$format $orientation',
+          );
+        }
       }
     });
   });

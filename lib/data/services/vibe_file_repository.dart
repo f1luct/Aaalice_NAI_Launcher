@@ -8,10 +8,10 @@ import '../../core/storage/local_storage_service.dart';
 import '../../core/utils/app_logger.dart';
 import '../../core/utils/file_name_sanitizer.dart';
 import '../../core/utils/novelai_vibe_codec.dart';
-import '../../core/utils/vibe_export_utils.dart';
 import '../../core/utils/vibe_file_parser.dart';
 import '../../core/utils/vibe_library_path_helper.dart';
 import '../models/vibe/vibe_reference.dart';
+import 'metadata/metadata_error_summary.dart';
 import 'vibe_file_document_codec.dart';
 import 'vibe_file_storage_protocol.dart';
 import 'vibe_file_storage_types.dart';
@@ -174,7 +174,9 @@ class VibeFileRepository implements VibeFileRepositoryProtocol {
         }
       } catch (error) {
         if (preserveExistingData) {
-          throw StateError('无法安全解析现有 Vibe Bundle，已取消覆盖: $error');
+          throw StateError(
+            '无法安全解析现有 Vibe Bundle，已取消覆盖: ${metadataErrorSummary(error)}',
+          );
         }
       }
       if (preserveExistingData && existingJson == null) {
@@ -217,13 +219,20 @@ class VibeFileRepository implements VibeFileRepositoryProtocol {
           filePath,
           fileName: fileName,
         );
-      } else {
-        final bytes = await file.readAsBytes();
-        if (extension == _singleFileExtension &&
-            !VibeExportUtils.validateNaiv4VibeJson(utf8.decode(bytes))) {
+      } else if (extension == _singleFileExtension) {
+        final parsed = await VibeFileParser.fromNaiV4VibeFile(
+          filePath,
+          fileName: fileName,
+        );
+        if (!parsed.matchesSchema) {
           AppLogger.w('文件格式校验失败: $filePath', _tag);
         }
-        references = await VibeFileParser.parseFile(fileName, bytes);
+        references = [parsed.reference];
+      } else {
+        references = await VibeFileParser.parseFile(
+          fileName,
+          await file.readAsBytes(),
+        );
       }
 
       if (references.isEmpty) {
@@ -277,7 +286,12 @@ class VibeFileRepository implements VibeFileRepositoryProtocol {
         infoExtracted: _extractStoredInfoExtracted(importInfo, 0.7),
       );
     } catch (e, stackTrace) {
-      AppLogger.e('读取 Vibe 导入参数失败: $filePath', e, stackTrace, _tag);
+      AppLogger.e(
+        '读取 Vibe 导入参数失败: $filePath',
+        metadataErrorSummary(e),
+        stackTrace,
+        _tag,
+      );
       return null;
     }
   }
@@ -437,7 +451,12 @@ class VibeFileRepository implements VibeFileRepositoryProtocol {
 
       return previews;
     } catch (e, stackTrace) {
-      AppLogger.e('提取 Bundle 缩略图失败: $bundlePath', e, stackTrace, _tag);
+      AppLogger.e(
+        '提取 Bundle 缩略图失败: $bundlePath',
+        metadataErrorSummary(e),
+        stackTrace,
+        _tag,
+      );
       return const [];
     }
   }
@@ -512,7 +531,11 @@ class VibeFileRepository implements VibeFileRepositoryProtocol {
   }
 
   String _normalizeFileBaseName(String name) {
-    return FileNameSanitizer.sanitize(name, fallback: 'vibe', maxLength: 120);
+    return FileNameSanitizer.segment(
+      name,
+      fallback: 'vibe',
+      maxCodePoints: 120,
+    );
   }
 
   Map<String, dynamic>? _extractBundleImportInfo(

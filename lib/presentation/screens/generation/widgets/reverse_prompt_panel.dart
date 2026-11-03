@@ -14,12 +14,14 @@ import '../../../../data/models/character/character_prompt.dart';
 import '../../../../data/services/local_onnx_model_service.dart';
 import '../../../providers/generation/generation_panel_expansion_provider.dart';
 import '../../../providers/generation/generation_params_notifier.dart';
+import '../../../providers/local_tagger_models_provider.dart';
 import '../../../providers/reverse_prompt_provider.dart';
 import '../../../providers/tag_library_page_provider.dart';
 import '../../../prompt_assistant/providers/prompt_assistant_history_provider.dart';
 import '../../../utils/asset_protection_guard.dart';
 import '../../../utils/card_drop_reader.dart';
 import '../../../utils/clipboard_image.dart';
+import '../../../utils/native_drop_callback.dart';
 import '../../../widgets/common/image_card_action.dart';
 import '../../../../core/utils/localization_extension.dart';
 import '../../../widgets/common/app_toast.dart';
@@ -29,6 +31,7 @@ import '../../../widgets/common/decoded_memory_image.dart';
 import '../../../widgets/common/themed_divider.dart';
 import '../../../widgets/common/labeled_slider_rows.dart';
 import '../../../widgets/tag_library/tag_library_picker_dialog.dart';
+import 'reverse_prompt_tagger_category_chips.dart';
 
 class ReversePromptPanel extends ConsumerStatefulWidget {
   const ReversePromptPanel({super.key});
@@ -220,9 +223,12 @@ class _ReversePromptPanelState extends ConsumerState<ReversePromptPanel> {
           setState(() => _isDragging = false);
         }
       },
-      onPerformDrop: (event) async {
+      onPerformDrop: (event) {
         setState(() => _isDragging = false);
-        await _handleDrop(event);
+        return releaseNativeDropCallback(
+          () => _handleDrop(event),
+          library: 'ReversePromptPanel',
+        );
       },
       child: button,
     );
@@ -318,38 +324,62 @@ class _ReversePromptPanelState extends ConsumerState<ReversePromptPanel> {
 
   Widget _buildTaggerControls(ReversePromptState state) {
     return FutureBuilder<List<LocalOnnxModelDescriptor>>(
-      future: ref.read(localOnnxModelServiceProvider).scanTaggerModels(),
+      // 缓存失效前始终是同一个 Future，重建不会重新扫描模型目录
+      future: ref.watch(localTaggerModelsProvider.future),
       builder: (context, snapshot) {
         final models = snapshot.data ?? const <LocalOnnxModelDescriptor>[];
         final selected =
             models.any((m) => m.path == state.selectedTaggerModelPath)
             ? state.selectedTaggerModelPath
             : null;
+        // 未选择时运行会落到第一个模型，分类跟随实际要用的模型
+        final effectiveModel =
+            models.where((model) => model.path == selected).firstOrNull ??
+            models.firstOrNull;
+        final labelsPath = effectiveModel?.labelsPath;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            DropdownButtonFormField<String>(
-              initialValue: selected,
-              isExpanded: true,
-              items: models
-                  .map(
-                    (model) => DropdownMenuItem(
-                      value: model.path,
-                      child: ModelNameLabel(modelId: model.name),
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    initialValue: selected,
+                    isExpanded: true,
+                    items: models
+                        .map(
+                          (model) => DropdownMenuItem(
+                            value: model.path,
+                            child: ModelNameLabel(modelId: model.name),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: state.isProcessing
+                        ? null
+                        : ref
+                              .read(reversePromptProvider.notifier)
+                              .setSelectedTaggerModelPath,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.reversePrompt_localTaggerModel,
+                      hintText: context.l10n.reversePrompt_localTaggerModelHint,
+                      isDense: true,
                     ),
-                  )
-                  .toList(),
-              onChanged: state.isProcessing
-                  ? null
-                  : ref
-                        .read(reversePromptProvider.notifier)
-                        .setSelectedTaggerModelPath,
-              decoration: InputDecoration(
-                labelText: context.l10n.reversePrompt_localTaggerModel,
-                hintText: context.l10n.reversePrompt_localTaggerModelHint,
-                isDense: true,
-              ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: context.l10n.common_refresh,
+                  onPressed: () => ref.invalidate(localTaggerModelsProvider),
+                  icon: const Icon(Icons.refresh_rounded),
+                ),
+              ],
             ),
+            if (labelsPath != null) ...[
+              const SizedBox(height: 8),
+              ReversePromptTaggerCategoryChips(
+                labelsPath: labelsPath,
+                enabled: !state.isProcessing,
+              ),
+            ],
             const SizedBox(height: 6),
             LabeledSliderRows(
               sliders: [
@@ -372,12 +402,6 @@ class _ReversePromptPanelState extends ConsumerState<ReversePromptPanel> {
                             .setTaggerCharacterThreshold,
                 ),
               ],
-            ),
-            Text(
-              context.l10n.reversePrompt_taggerFilterHint,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
             ),
           ],
         );

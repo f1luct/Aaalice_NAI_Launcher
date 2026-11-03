@@ -1,6 +1,5 @@
 import 'dart:collection';
 import 'dart:convert';
-import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' show Rect;
@@ -21,6 +20,10 @@ class InpaintMaskUtils {
   static Uint8List normalizeMaskBytes(Uint8List bytes) {
     final mask = BinaryMaskCodec.decode(bytes);
     return mask == null ? bytes : BinaryMaskCodec.encode(mask);
+  }
+
+  static Future<Uint8List> normalizeMaskBytesAsync(Uint8List bytes) {
+    return ComputeGate().runIsolate(() => normalizeMaskBytes(bytes));
   }
 
   /// 将蒙版按最近邻重采样到编辑器工作画布，保持硬边和二值语义。
@@ -163,6 +166,16 @@ class InpaintMaskUtils {
     return _encodeBinaryMask(binaryMask, width, height);
   }
 
+  static Future<Uint8List> encodeBinaryMaskAsync(
+    Uint8List binaryMask,
+    int width,
+    int height,
+  ) {
+    return ComputeGate().runIsolate(
+      () => encodeBinaryMask(binaryMask, width, height),
+    );
+  }
+
   static Future<Uint8List> encodeEditorOverlayFromBinaryMaskAsync(
     Uint8List binaryMask, {
     required int width,
@@ -182,6 +195,73 @@ class InpaintMaskUtils {
     );
   }
 
+  static Future<MaskOverlayPatch?> encodeEditorOverlayPatchAsync(
+    Uint8List binaryMask, {
+    required int width,
+    required int height,
+    int overlayAlpha = 140,
+  }) {
+    if (binaryMask.length != width * height) {
+      throw ArgumentError('Binary mask length does not match dimensions.');
+    }
+    return ComputeGate().runIsolate(
+      () => encodeEditorOverlayPatch(
+        binaryMask,
+        width: width,
+        height: height,
+        overlayAlpha: overlayAlpha,
+      ),
+    );
+  }
+
+  /// 只编码蒙版的外接矩形，叠进图层时不会把图层范围撑满整个取景框；全空时返回 null
+  static MaskOverlayPatch? encodeEditorOverlayPatch(
+    Uint8List binaryMask, {
+    required int width,
+    required int height,
+    int overlayAlpha = 140,
+  }) {
+    var left = width;
+    var top = height;
+    var right = -1;
+    var bottom = -1;
+    var index = 0;
+    for (var y = 0; y < height; y++) {
+      for (var x = 0; x < width; x++) {
+        if (binaryMask[index++] == 1) {
+          if (x < left) left = x;
+          if (x > right) right = x;
+          if (y < top) top = y;
+          bottom = y;
+        }
+      }
+    }
+    if (right < 0) return null;
+
+    final patchWidth = right - left + 1;
+    final patchHeight = bottom - top + 1;
+    final cropped = Uint8List(patchWidth * patchHeight);
+    for (var y = 0; y < patchHeight; y++) {
+      final rowStart = (top + y) * width + left;
+      cropped.setRange(
+        y * patchWidth,
+        (y + 1) * patchWidth,
+        binaryMask,
+        rowStart,
+      );
+    }
+    return MaskOverlayPatch(
+      bytes: _encodeEditorOverlay(
+        cropped,
+        patchWidth,
+        patchHeight,
+        overlayAlpha.clamp(0, 255).toInt(),
+      ),
+      left: left,
+      top: top,
+    );
+  }
+
   static bool hasMaskedPixels(Uint8List bytes) {
     img.Image? decoded;
     try {
@@ -197,6 +277,10 @@ class InpaintMaskUtils {
     return binaryMask.any((value) => value == 1);
   }
 
+  static Future<bool> hasMaskedPixelsAsync(Uint8List bytes) {
+    return ComputeGate().runIsolate(() => hasMaskedPixels(bytes));
+  }
+
   /// 单次解码得到 0/1 二值蒙版数组及尺寸；解码失败返回 null。
   ///
   /// 供需要同时做"归一化 + 空蒙版检查 + 像素扫描"的调用方使用，
@@ -207,6 +291,35 @@ class InpaintMaskUtils {
     final decoded = BinaryMaskCodec.decode(bytes);
     if (decoded == null) return null;
     return (mask: decoded.pixels, width: decoded.width, height: decoded.height);
+  }
+
+  static Future<({Uint8List mask, int width, int height})?>
+  decodeBinaryMaskAsync(Uint8List bytes) {
+    return ComputeGate().runIsolate(() => decodeBinaryMask(bytes));
+  }
+
+  /// 在后台解码为 0/1 二值蒙版并数出被覆盖的像素。
+  static Future<({Uint8List mask, int width, int height, int maskedPixels})?>
+  decodeBinaryMaskWithCoverageAsync(Uint8List bytes) {
+    return ComputeGate().runIsolate(() {
+      final decoded = decodeBinaryMask(bytes);
+      if (decoded == null) return null;
+      return (
+        mask: decoded.mask,
+        width: decoded.width,
+        height: decoded.height,
+        maskedPixels: countMaskedPixels(decoded.mask),
+      );
+    });
+  }
+
+  /// 0/1 二值蒙版中被覆盖的像素数。
+  static int countMaskedPixels(Uint8List binaryMask) {
+    var total = 0;
+    for (final value in binaryMask) {
+      total += value;
+    }
+    return total;
   }
 
   /// 将 0/1 二值蒙版渲染为黑白 RGBA 图像（白=蒙版区域），不做 PNG 编码。
@@ -356,7 +469,7 @@ class InpaintMaskUtils {
     required int y,
     int overlayAlpha = 140,
   }) {
-    return Isolate.run(
+    return ComputeGate().runIsolate(
       () => fillEditorMaskRegionAtPoint(
         bytes,
         x: x,
@@ -438,52 +551,21 @@ class InpaintMaskUtils {
       visit(currentX, currentY + 1);
     }
 
+    // 泛洪只走原本为空的像素，region 恰好就是新增部分
+    final added = Uint8List(width * height);
     for (final index in region) {
-      binaryMask[index] = 1;
+      added[index] = 1;
     }
 
     return MaskFillRegionResult(
       status: MaskFillRegionStatus.filled,
-      filledMaskBytes: _encodeBinaryMask(binaryMask, width, height),
-      overlayBytes: _encodeEditorOverlay(
-        binaryMask,
-        width,
-        height,
-        overlayAlpha,
+      addedPatch: encodeEditorOverlayPatch(
+        added,
+        width: width,
+        height: height,
+        overlayAlpha: overlayAlpha,
       ),
     );
-  }
-
-  /// 提取填充操作新补出的区域，避免把原有蒙版重复叠进新图层。
-  static Uint8List extractFilledMaskDelta(
-    Uint8List originalBytes,
-    Uint8List filledBytes,
-  ) {
-    img.Image? original;
-    img.Image? filled;
-    try {
-      original = img.decodeImage(originalBytes);
-      filled = img.decodeImage(filledBytes);
-    } catch (_) {
-      return filledBytes;
-    }
-    if (original == null ||
-        filled == null ||
-        original.width != filled.width ||
-        original.height != filled.height) {
-      return filledBytes;
-    }
-
-    final originalMask = _createBinaryMask(original);
-    final filledMask = _createBinaryMask(filled);
-    final deltaMask = Uint8List(original.width * original.height);
-    for (var index = 0; index < deltaMask.length; index++) {
-      if (filledMask[index] == 1 && originalMask[index] == 0) {
-        deltaMask[index] = 1;
-      }
-    }
-
-    return _encodeBinaryMask(deltaMask, original.width, original.height);
   }
 
   /// 将 inpaint 返回图按蒙版合成回原图。
@@ -652,7 +734,7 @@ class InpaintMaskUtils {
     required int targetHeight,
     int closingIterations = 0,
     int expansionIterations = 0,
-    int latentGridSize = 8,
+    int latentGridSize = novelAiLatentGridSize,
     int latentDilationIterations = 4,
     int blurRadius = 20,
     int blurIterations = 2,
@@ -685,7 +767,7 @@ class InpaintMaskUtils {
     required int targetHeight,
     int closingIterations = 0,
     int expansionIterations = 0,
-    int latentGridSize = 8,
+    int latentGridSize = novelAiLatentGridSize,
     int latentDilationIterations = 4,
     int blurRadius = 20,
     int blurIterations = 2,
@@ -711,6 +793,8 @@ class InpaintMaskUtils {
         requestHeight: targetHeight,
         latentWidth: latentWidth,
         latentHeight: latentHeight,
+        // Undecodable bytes are forwarded untouched, so emptiness is unknown.
+        isLatentMaskEmpty: false,
       );
     }
 
@@ -820,6 +904,7 @@ class InpaintMaskUtils {
       requestHeight: targetHeight,
       latentWidth: latentWidth,
       latentHeight: latentHeight,
+      isLatentMaskEmpty: !latentBinaryMask.contains(1),
     );
   }
 
@@ -830,7 +915,7 @@ class InpaintMaskUtils {
     required int targetHeight,
     int closingIterations = 0,
     int expansionIterations = 0,
-    int latentGridSize = 8,
+    int latentGridSize = novelAiLatentGridSize,
     int latentDilationIterations = 4,
     int blurRadius = 20,
     int blurIterations = 2,
@@ -923,7 +1008,7 @@ class InpaintMaskUtils {
     int closingIterations = 0,
     int expansionIterations = 0,
     bool alignToLatentGrid = false,
-    int latentGridSize = 8,
+    int latentGridSize = novelAiLatentGridSize,
   }) {
     img.Image? decoded;
     try {
@@ -974,7 +1059,7 @@ class InpaintMaskUtils {
     required int targetHeight,
     int closingIterations = 0,
     int expansionIterations = 0,
-    int latentGridSize = 8,
+    int latentGridSize = novelAiLatentGridSize,
   }) {
     return prepareNovelAiInpaintMaskArtifacts(
       bytes,
@@ -996,7 +1081,7 @@ class InpaintMaskUtils {
     required int targetHeight,
     int closingIterations = 0,
     int expansionIterations = 0,
-    int latentGridSize = 8,
+    int latentGridSize = novelAiLatentGridSize,
   }) {
     return ComputeGate().runIsolate(
       () => prepareNovelAiInpaintMaskArtifacts(
@@ -1017,7 +1102,7 @@ class InpaintMaskUtils {
     required int targetHeight,
     int closingIterations = 0,
     int expansionIterations = 0,
-    int latentGridSize = 8,
+    int latentGridSize = novelAiLatentGridSize,
   }) {
     return prepareNovelAiInpaintMaskArtifacts(
       bytes,
@@ -1068,7 +1153,7 @@ class InpaintMaskUtils {
     Uint8List bytes, {
     int overlayAlpha = 140,
   }) {
-    return Isolate.run(
+    return ComputeGate().runIsolate(
       () => maskToEditorOverlay(bytes, overlayAlpha: overlayAlpha),
     );
   }

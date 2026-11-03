@@ -79,31 +79,6 @@ class DiagnosticLogExportService {
   final int _maxPerFileBytes;
   final int _maxTotalSourceBytes;
 
-  static Future<void> cleanupStaleTemporaryFiles({
-    Duration minimumAge = Duration.zero,
-    DateTime? now,
-  }) async {
-    final temporaryDirectory = await getTemporaryDirectory();
-    final exportDirectory = Directory(
-      p.join(temporaryDirectory.path, 'exports'),
-    );
-    if (!await exportDirectory.exists()) return;
-
-    final cutoff = (now ?? DateTime.now()).subtract(minimumAge);
-    await for (final entity in exportDirectory.list(followLinks: false)) {
-      final name = p.basename(entity.path);
-      final isDiagnosticExport = name.contains('_nai-launcher-diagnostics-');
-      if (!isDiagnosticExport) continue;
-      try {
-        final modified = await entity.stat().then((stat) => stat.modified);
-        if (modified.isAfter(cutoff)) continue;
-        await entity.delete(recursive: entity is Directory);
-      } on FileSystemException {
-        // A locked export is either still in use or will be retried next launch.
-      }
-    }
-  }
-
   Future<DiagnosticLogExportResult> export({
     required String dialogTitle,
   }) async {

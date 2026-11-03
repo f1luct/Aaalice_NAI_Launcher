@@ -11,6 +11,8 @@ import 'package:nai_launcher/data/services/saved_account_removal_service.dart';
 import 'package:nai_launcher/presentation/widgets/auth/account_avatar.dart';
 import 'package:nai_launcher/presentation/widgets/settings/account_profile_sheet.dart';
 
+import '../../../helpers/adaptive_panel_expectations.dart';
+
 final _account = SavedAccount(
   id: 'account-1',
   email: 'token_1787796794404',
@@ -172,7 +174,6 @@ void main() {
           await tester.tap(find.text('Open'));
           await tester.pumpAndSettle();
           final logout = find.byKey(const Key('account-profile-logout-button'));
-          expect(logout.hitTestable(), findsOneWidget);
           final panel = find.byKey(
             ValueKey(
               size.width >= 600
@@ -231,6 +232,8 @@ void main() {
           await _revealInProfile(tester, removeAction);
           expect(removeAction.hitTestable(), findsOneWidget);
           expect(tester.getSize(removeAction).height, greaterThanOrEqualTo(48));
+          await _revealInProfile(tester, logout);
+          expect(logout.hitTestable(), findsOneWidget);
           final error = tester.takeException();
           expect(
             error,
@@ -290,6 +293,7 @@ void main() {
     expect(find.byKey(const ValueKey('adaptive-bottom-sheet')), findsOneWidget);
     expect(find.byType(Dialog), findsNothing);
     expect(find.textContaining('token_'), findsNothing);
+    expectPanelHeaderScrollsWithContent(tester);
     await tester.scrollUntilVisible(
       find.text('Token 账号'),
       100,

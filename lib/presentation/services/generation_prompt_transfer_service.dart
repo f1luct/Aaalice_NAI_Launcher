@@ -1,11 +1,12 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants/api_constants.dart';
-import '../../core/utils/nai_prompt_formatter.dart';
-import '../../core/utils/sd_to_nai_converter.dart';
+import '../../data/models/character/character_prompt.dart';
 import '../../data/models/online_gallery/ai_tag_generation_info.dart';
+import '../providers/character_prompt_provider.dart';
 import '../providers/image_generation_provider.dart';
 import '../providers/pending_prompt_provider.dart';
+import 'prompt_formatting_policy.dart';
 
 final generationPromptTransferServiceProvider =
     Provider<GenerationPromptTransferService>(
@@ -190,7 +191,7 @@ class GenerationPromptTransferService {
 
   /// [raw] 原样填充，跳过 SD→NAI 转换与格式化。
   ///
-  /// 偏离上游：上游没有这个参数，两条提示词一律 `_normalize`。AI TAG 这类来源
+  /// 偏离上游：上游没有这个参数，提示词一律 `normalize`。AI TAG 这类来源
   /// 的提示词已经是 NAI 原生语法，再转一次会把自然语言描述压成下划线串、
   /// 并改写坏 `[...]` 降权。booru 系（danbooru 卡片）仍走默认的 false。
   void replaceMainPrompt({
@@ -249,15 +250,36 @@ class GenerationPromptTransferService {
 
     final positive = prompt.trim();
     if (positive.isNotEmpty) {
-      notifier.updatePrompt(raw ? positive : _normalize(positive));
+      notifier.updatePrompt(raw ? positive : normalize(positive));
     }
 
     final negative = negativePrompt?.trim();
     if (negative != null && negative.isNotEmpty) {
-      notifier.updateNegativePrompt(raw ? negative : _normalize(negative));
+      notifier.updateNegativePrompt(raw ? negative : normalize(negative));
     }
   }
 
-  String _normalize(String prompt) =>
-      NaiPromptFormatter.format(SdToNaiConverter.convert(prompt));
+  /// 角色提示词与主提示词走同一条规范化后整体替换。
+  ///
+  /// 偏离上游：[raw] 语义同 [replaceMainPrompt]，AI TAG 的角色提示词同样是
+  /// NAI 原生语法，不能再做 SD→NAI 转换。
+  void replaceCharacterPrompts(
+    List<CharacterPrompt> characters, {
+    bool raw = false,
+  }) {
+    _ref.read(characterPromptNotifierProvider.notifier).replaceAll([
+      for (final character in characters)
+        raw
+            ? character
+            : character.copyWith(
+                prompt: normalize(character.prompt),
+                negativePrompt: normalize(character.negativePrompt),
+              ),
+    ]);
+  }
+
+  /// 外部来源可能是 SD 语法，转换常开；格式化与补空格按用户设置。
+  String normalize(String prompt) => _ref
+      .read(promptFormattingPolicyProvider)
+      .apply(prompt, convertSdSyntax: true);
 }

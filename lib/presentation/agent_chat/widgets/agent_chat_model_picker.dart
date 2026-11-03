@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../../core/agent/agent_types.dart';
+import '../../../core/extensions/list_sort_extensions.dart';
 import '../../../core/utils/localization_extension.dart';
 import '../../../data/models/agent/agent_settings.dart';
 import '../../../l10n/app_localizations.dart';
@@ -11,6 +12,7 @@ import '../../adaptive/adaptive_presenter.dart';
 import '../../adaptive/interaction_policy.dart';
 import '../../../data/models/prompt_assistant/prompt_assistant_models.dart';
 import '../../prompt_assistant/models/assistant_model_capability.dart';
+import '../../widgets/common/menu_action_label.dart';
 import '../../widgets/common/searchable_model_picker.dart';
 import '../../widgets/common/model_family_icon.dart';
 import '../../widgets/common/provider_icon.dart';
@@ -516,21 +518,13 @@ class AgentChatThinkingControl extends StatelessWidget {
           PopupMenuItem<ThinkingLevel>(
             value: option,
             height: _agentChatControlExtent(context),
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 20,
-                  child: option == level
-                      ? Icon(
-                          Icons.check_rounded,
-                          size: 18,
-                          color: Theme.of(context).colorScheme.primary,
-                        )
-                      : null,
-                ),
-                const SizedBox(width: 8),
-                Text(thinkingLevelLabel(l10n, option)),
-              ],
+            child: MenuActionLabel(
+              leading: SizedBox(
+                width: 20,
+                child: option == level ? const Icon(Icons.check_rounded) : null,
+              ),
+              label: thinkingLevelLabel(l10n, option),
+              iconColor: Theme.of(context).colorScheme.primary,
             ),
           ),
       ],
@@ -676,11 +670,7 @@ List<_AgentChatModelOption> _modelOptions(PromptAssistantConfigState config) =>
             ))
               if (!model.isPlaceholder)
                 _AgentChatModelOption(provider: provider, model: model),
-          ]..sort(
-            (a, b) => a.displayName.toLowerCase().compareTo(
-              b.displayName.toLowerCase(),
-            ),
-          ),
+          ]..sortByKey((option) => option.displayName.toLowerCase()),
     ];
 
 String thinkingLevelLabel(AppLocalizations l10n, ThinkingLevel level) =>

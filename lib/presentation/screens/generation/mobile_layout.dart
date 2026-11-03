@@ -8,8 +8,10 @@ import '../../../data/models/image/image_params.dart';
 import '../../../data/services/auth_provider.dart';
 import '../../providers/character_prompt_provider.dart';
 import '../../providers/fixed_tags_provider.dart';
+import '../../providers/generation/image_card_selection_provider.dart';
 import '../../providers/generation/image_generation_selectors.dart';
 import '../../providers/generation/image_workflow_controller.dart';
+import '../../providers/generation/workflow_panel_reveal_provider.dart';
 import '../../providers/image_generation_provider.dart';
 import '../../providers/krita/krita_bridge_notifier.dart';
 import '../../providers/prompt_maximize_provider.dart';
@@ -30,11 +32,13 @@ class MobileGenerationLayout extends ConsumerStatefulWidget {
     this.historyViewport,
     this.promptInputController,
     this.promptInputKey,
+    this.fixedTagsOverlayVisible = false,
   });
 
   final OwnedViewportOffset? historyViewport;
   final PromptInputController? promptInputController;
   final GlobalKey? promptInputKey;
+  final bool fixedTagsOverlayVisible;
 
   @override
   ConsumerState<MobileGenerationLayout> createState() =>
@@ -48,11 +52,19 @@ class _MobileGenerationLayoutState
   late final PromptInputController _promptInputController;
   late final GlobalKey _promptInputKey;
   late final bool _ownsPromptInputController;
+  late final ProviderSubscription<int> _workflowRevealSubscription;
 
   @override
   void initState() {
     super.initState();
     _controller = MobileGenerationController(ref);
+    // 参数面板在抽屉里：放大 / 增强只展开面板时，顺带把抽屉打开
+    _workflowRevealSubscription = ref.listenManual<int>(
+      workflowPanelRevealProvider,
+      (previous, next) {
+        if (next != previous) _controller.openParameterDrawer();
+      },
+    );
     _historyViewport = widget.historyViewport ?? OwnedViewportOffset();
     _ownsPromptInputController = widget.promptInputController == null;
     _promptInputKey =
@@ -69,6 +81,7 @@ class _MobileGenerationLayoutState
 
   @override
   void dispose() {
+    _workflowRevealSubscription.close();
     _controller.dispose();
     if (_ownsPromptInputController) _promptInputController.dispose();
     super.dispose();
@@ -88,6 +101,9 @@ class _MobileGenerationLayoutState
         ? ref.watch(kritaBridgeNotifierProvider).isBridgeGenerating
         : false;
     final isPromptMaximized = ref.watch(promptMaximizeNotifierProvider);
+    final isSelectionMode = ref.watch(
+      generationImageCardSelectionProvider.select((state) => state.isActive),
+    );
     final showRandomTools = ref.watch(randomPromptToolsVisibilityProvider);
     final isUpscaleMode = ref.watch(
       imageWorkflowControllerProvider.select((workflow) => workflow.isUpscale),
@@ -141,6 +157,8 @@ class _MobileGenerationLayoutState
           batchStatus: batchStatus,
           cooldownRemainingSeconds: cooldownState.remainingSeconds,
           isPromptMaximized: isPromptMaximized,
+          isSelectionMode: isSelectionMode,
+          isFixedTagsOverlayVisible: widget.fixedTagsOverlayVisible,
           keyboardVisible: keyboardVisible,
           isGenerating: isGenerating,
           isLauncherGenerating: isLauncherGenerating,

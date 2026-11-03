@@ -143,11 +143,11 @@ class GenerationParamsNotifier extends _$GenerationParamsNotifier {
 
   /// 更新提示词
   ///
-  /// 偏离上游：上游一律 `Future.microtask` 延迟写入。用户输入路径必须**同步**
-  /// 写入状态——若全部延后，同一事件内连续两次文本更新（iOS 中文输入法的组合
-  /// 串、快速连删）会留下两个过期写入，与 prompt_input 的 state→controller
-  /// 回写监听形成新旧值永久振荡：微任务队列永不排空，应用整体卡死。
-  /// 这里只在构建/布局阶段才延迟到帧尾，同样能避免「构建期间修改 provider」。
+  /// 用户输入路径同步写入状态。若一律用 `Future.microtask` 延后，同一事件内
+  /// 连续两次文本更新（输入法组合串、快速连删）会留下两个过期写入，与
+  /// prompt_input 的 state→controller 回写监听形成新旧值永久振荡：微任务队列
+  /// 永不排空，应用整体卡死。只在构建/布局阶段延后到帧尾，以免在构建期间
+  /// 修改 provider。
   void updatePrompt(String prompt) {
     final storage = _storage;
     _applyPromptUpdate(() {
@@ -159,7 +159,7 @@ class GenerationParamsNotifier extends _$GenerationParamsNotifier {
 
   /// 更新负向提示词
   ///
-  /// 偏离上游的理由同 [updatePrompt]。
+  /// 写入时机同 [updatePrompt]。
   void updateNegativePrompt(String negativePrompt) {
     final storage = _storage;
     _applyPromptUpdate(() {

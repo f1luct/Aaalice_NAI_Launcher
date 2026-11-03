@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:collection/collection.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -679,26 +678,6 @@ Widget _buildVibeLibraryDialogSlider(
       ),
     ],
   );
-}
-
-VibeLibraryEntry? findOriginalLibraryEntryForOverwrite(
-  List<VibeReference> vibes,
-  List<VibeLibraryEntry> entries,
-) {
-  if (vibes.length != 1) {
-    return null;
-  }
-
-  final vibe = vibes.single;
-  return entries.firstWhereOrNull((entry) {
-    final sameDisplayName = entry.displayName == vibe.displayName;
-    final sameEncoding = entry.vibeEncoding == vibe.vibeEncoding;
-    final sameRawImage = const ListEquality<int>().equals(
-      entry.rawImageData,
-      vibe.rawImageData,
-    );
-    return sameDisplayName && (sameEncoding || sameRawImage);
-  });
 }
 
 bool shouldShowInfoExtractedForLibrarySave(List<VibeReference> vibes) {

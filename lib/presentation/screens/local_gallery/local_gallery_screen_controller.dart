@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -16,7 +15,6 @@ import '../../../core/utils/localization_extension.dart';
 import '../../../core/utils/permission_utils.dart';
 import '../../../data/models/gallery/gallery_category.dart';
 import '../../../data/repositories/gallery_folder_repository.dart';
-import '../../providers/bulk_operation_provider.dart';
 import '../../providers/collection_provider.dart';
 import '../../providers/gallery_album_provider.dart';
 import '../../providers/gallery_category_provider.dart';
@@ -79,7 +77,7 @@ class LocalGalleryScreenController extends ChangeNotifier {
       GlobalKey<ScaffoldState>();
 
   late final Map<String, VoidCallback> shortcuts;
-  final FocusNode shortcutsFocusNode = FocusNode();
+  final FocusNode searchFocusNode = FocusNode(debugLabel: 'LocalGallerySearch');
 
   AppLifecycleListener? _lifecycleListener;
   Timer? _refreshDebounceTimer;
@@ -123,7 +121,7 @@ class LocalGalleryScreenController extends ChangeNotifier {
       completer.complete();
     }
     _lifecycleListener?.dispose();
-    shortcutsFocusNode.dispose();
+    searchFocusNode.dispose();
     super.dispose();
   }
 
@@ -149,12 +147,7 @@ class LocalGalleryScreenController extends ChangeNotifier {
     _ref.read(localGalleryNotifierProvider.notifier).refresh();
   }
 
-  void focusSearch() {
-    FocusManager.instance.primaryFocus?.unfocus();
-    Future<void>.delayed(const Duration(milliseconds: 50), () {
-      FocusManager.instance.primaryFocus?.requestFocus();
-    });
-  }
+  void focusSearch() => searchFocusNode.requestFocus();
 
   void enterSelectionMode() {
     _ref.read(localGallerySelectionNotifierProvider.notifier).enter();
@@ -162,23 +155,6 @@ class LocalGalleryScreenController extends ChangeNotifier {
 
   void clearFilters() {
     _ref.read(localGalleryNotifierProvider.notifier).clearAllFilters();
-  }
-
-  void handleKeyEvent(KeyEvent event) {
-    if (event is! KeyDownEvent || !HardwareKeyboard.instance.isControlPressed) {
-      return;
-    }
-    final bulkState = _ref.read(bulkOperationNotifierProvider);
-    if (event.logicalKey == LogicalKeyboardKey.keyZ) {
-      if (HardwareKeyboard.instance.isShiftPressed) {
-        if (bulkState.canRedo) unawaited(_actions.redo());
-      } else if (bulkState.canUndo) {
-        unawaited(_actions.undo());
-      }
-    } else if (event.logicalKey == LogicalKeyboardKey.keyY &&
-        bulkState.canRedo) {
-      unawaited(_actions.redo());
-    }
   }
 
   Future<void> runPacking(Future<void> Function() action) async {

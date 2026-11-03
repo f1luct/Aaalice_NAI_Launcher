@@ -84,6 +84,16 @@ class LayerManager extends ChangeNotifier {
     if (layer != null) _lastActiveIdByRole[layer.role] = layer.id;
   }
 
+  /// 会话开始时选定活动图层：图片层记住 [drawing]，编辑工具不会直接落在载入的原图上；
+  /// 有蒙版层时从最上方的蒙版层开始
+  void selectInitialLayers(Layer drawing) {
+    setActiveLayer(drawing.id);
+    final mask = maskLayers.firstOrNull;
+    if (mask != null) {
+      setActiveLayer(mask.id);
+    }
+  }
+
   /// 切到 [role] 时落到的图层：最近激活过且未锁定的同角色图层，其次最上方未锁定的
   Layer? preferredLayerFor(LayerRole role) {
     final rememberedId = _lastActiveIdByRole[role];
@@ -522,16 +532,21 @@ class LayerManager extends ChangeNotifier {
 
   /// 以文档坐标渲染所有可见图层，使用 renderWithCache 优先利用缓存
   /// [viewportBounds] 视口边界，用于空间剔除优化（可选）
+  /// [pixelScale] 文档到设备像素的缩放；[liveStroke] 正在画进当前图层的一笔
   void renderAll(
     Canvas canvas, {
     Rect? viewportBounds,
     FilterQuality filterQuality = FilterQuality.none,
+    double pixelScale = 1,
+    StrokeData? liveStroke,
   }) {
     renderWhere(
       canvas,
       (_) => true,
       viewportBounds: viewportBounds,
       filterQuality: filterQuality,
+      pixelScale: pixelScale,
+      liveStroke: liveStroke,
     );
   }
 
@@ -541,16 +556,43 @@ class LayerManager extends ChangeNotifier {
     bool Function(Layer layer) include, {
     Rect? viewportBounds,
     FilterQuality filterQuality = FilterQuality.none,
+    double pixelScale = 1,
+    StrokeData? liveStroke,
   }) {
     // 索引 0 在最上层，所以从末尾往前画
-    for (final layer in _layers.reversed) {
-      if (layer.visible && include(layer)) {
+    final drawn = [
+      for (final layer in _layers.reversed)
+        if (layer.visible && include(layer)) layer,
+    ];
+    var index = 0;
+    while (index < drawn.length) {
+      final layer = drawn[index];
+      if (!layer.isMask) {
         layer.renderWithCache(
           canvas,
           viewportBounds: viewportBounds,
           filterQuality: filterQuality,
+          pixelScale: pixelScale,
+          liveStroke: layer.id == _activeLayerId ? liveStroke : null,
         );
+        index++;
+        continue;
       }
+      // 相邻的蒙版层同属一层叠加色，分开画会在重叠处叠深
+      var end = index + 1;
+      while (end < drawn.length && drawn[end].isMask) {
+        end++;
+      }
+      Layer.renderMaskOverlay(
+        canvas,
+        drawn.sublist(index, end),
+        viewportBounds: viewportBounds,
+        filterQuality: filterQuality,
+        pixelScale: pixelScale,
+        liveStroke: liveStroke,
+        liveLayerId: _activeLayerId,
+      );
+      index = end;
     }
   }
 
@@ -576,13 +618,11 @@ class LayerManager extends ChangeNotifier {
     renderWhere(canvas, include ?? (_) => true);
 
     final picture = recorder.endRecording();
-    final image = await picture.toImage(
-      region.width.round(),
-      region.height.round(),
-    );
-    picture.dispose();
-
-    return image;
+    try {
+      return await picture.toImage(region.width.round(), region.height.round());
+    } finally {
+      picture.dispose();
+    }
   }
 
   // ===== 批量操作方法 =====

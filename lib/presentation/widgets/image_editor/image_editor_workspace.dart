@@ -1,9 +1,7 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 
@@ -19,6 +17,7 @@ import '../../../data/services/efficient_vit_sam_service.dart';
 import '../../adaptive/adaptive_layout.dart';
 import '../../adaptive/adaptive_presenter.dart';
 import '../../utils/card_drop_reader.dart';
+import '../../utils/native_drop_callback.dart';
 import '../../widgets/common/app_toast.dart';
 import 'controllers/magic_wand_controller.dart';
 import 'core/editor_state.dart';
@@ -37,6 +36,7 @@ import 'layers/layer_role.dart';
 import 'painters/focused_context_overlay_painter.dart';
 import 'tools/closed_region_fill_tool.dart';
 import 'tools/frame_tool.dart';
+import 'tools/move_tool.dart';
 import 'tools/tool_base.dart';
 import 'canvas/editor_canvas.dart';
 import 'widgets/toolbar/desktop_toolbar.dart';
@@ -47,7 +47,9 @@ import 'widgets/panels/layer_panel.dart';
 import 'widgets/panels/color_panel.dart';
 import 'widgets/panels/canvas_size_dialog.dart';
 import 'widgets/panels/shift_edges_dialog.dart';
+import 'widgets/editor_image_import.dart';
 import 'widgets/editor_status_bar.dart';
+import 'widgets/transform_session_bar.dart';
 import 'widgets/outpaint_edge_drag_overlay.dart';
 import 'widgets/magic_wand_progress_overlay.dart';
 import 'canvas/layer_painter.dart';
@@ -95,8 +97,6 @@ class ImageEditorWorkspace extends StatefulWidget {
 }
 
 class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
-  static const int _maxImportedImageBytes = 50 * 1024 * 1024;
-
   ImageEditorController get _controller => widget.controller;
   EditorState get _state => _controller.editorState;
   FocusedSelectionState get _focusedSelectionState =>
@@ -313,19 +313,27 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
     }
   }
 
-  /// 重绘会话启用图层角色：原图层是受保护的图片层，默认绘制层改为蒙版层
+  /// 重绘会话启用图层角色：原图层是受保护的图片层，最上方另建蒙版层；
+  /// 默认绘制层与编辑会话一样留作图片层，编辑组的笔迹与擦除都落在它上面而不碰原图
   void _applyInpaintLayerRoles() {
     if (!_isInpaintMode) return;
-    final maskName = context.l10n.editor_maskLayerName;
-    final drawingName = context.l10n.editor_defaultDrawingLayerName;
-    for (final layer in _state.layerManager.layers) {
-      if (layer.id != _sourceLayerId && layer.name == drawingName) {
-        layer.role = LayerRole.mask;
-        _state.layerManager.renameLayer(layer.id, maskName);
-      }
-    }
+    _state.layerManager.addLayer(
+      name: context.l10n.editor_maskLayerName,
+      index: 0,
+      role: LayerRole.mask,
+    );
     _state.setRolePolicy(
       LayerRolePolicy.inpaint(protectedLayerId: _sourceLayerId),
+    );
+  }
+
+  void _selectInitialLayers() {
+    final layers = _state.layerManager;
+    layers.selectInitialLayers(
+      layers.layers.firstWhere(
+        (layer) => !layer.isMask && layer.id != _sourceLayerId,
+        orElse: () => layers.layers.last,
+      ),
     );
   }
 
@@ -349,7 +357,6 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
       session: _controller,
       editorState: _state,
       config: widget.config,
-      addMaskLayer: (name) => _addEmptyMaskLayerAboveSource(name: name),
     );
     _controller.initializeSession(
       canvasSize: const Size(1024, 1024),
@@ -420,10 +427,11 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
       );
       _localizeDefaultLayerName();
       _applyInpaintLayerRoles();
+      _selectInitialLayers();
       _focusedSelectionState.canvasSize = size;
 
       // 加载已有蒙版（如果有）
-      await _loadExistingMask();
+      await _loadExistingMask(operationEpoch);
       if (!mounted || !_controller.accepts(operationEpoch)) return;
       _loadExistingFocusSelection();
     }
@@ -509,16 +517,10 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
 
       _localizeDefaultLayerName();
       _applyInpaintLayerRoles();
-
-      // Select the default drawing layer rather than the base image layer.
-      final layer1 = _state.layerManager.layers.firstWhere(
-        (l) => l.name == defaultDrawingLayerName || l.isMask,
-        orElse: () => _state.layerManager.layers.last,
-      );
-      _state.layerManager.setActiveLayer(layer1.id);
+      _selectInitialLayers();
 
       // 加载已有蒙版
-      await _loadExistingMask();
+      await _loadExistingMask(operationEpoch);
       if (!mounted || !_controller.accepts(operationEpoch)) return;
       _loadExistingFocusSelection();
       // 蒙版按整张原图载入，必须先于取景框恢复
@@ -533,6 +535,7 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
       );
       _localizeDefaultLayerName();
       _applyInpaintLayerRoles();
+      _selectInitialLayers();
       _focusedSelectionState.canvasSize = _state.canvasSize;
     } finally {
       decodedImage?.dispose();
@@ -552,16 +555,19 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
     );
   }
 
-  Future<void> _loadExistingMask() async {
+  Future<void> _loadExistingMask(int operationEpoch) async {
     if (widget.existingMask == null) return;
 
     try {
-      final resizedMask = InpaintMaskUtils.resizeMaskBytes(
+      final resizedMask = await InpaintMaskUtils.resizeMaskBytesAsync(
         widget.existingMask!,
         targetWidth: _state.canvasSize.width.round(),
         targetHeight: _state.canvasSize.height.round(),
       );
-      final overlayBytes = InpaintMaskUtils.maskToEditorOverlay(resizedMask);
+      final overlayBytes = await InpaintMaskUtils.maskToEditorOverlayAsync(
+        resizedMask,
+      );
+      if (!mounted || !_controller.accepts(operationEpoch)) return;
 
       // 将已有蒙版添加为图层
       final layer = await _addMaskLayerAboveSource(
@@ -1159,12 +1165,15 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
   bool get _isClosedRegionFillActive =>
       _state.currentTool?.id == ClosedRegionFillTool.toolId;
 
+  /// 封闭区域填充要点到取景框边缘附近、移动工具的变换手柄可能压在框边上，此时边缘拖动让出指针
+  bool get _toolNeedsFrameEdges =>
+      _isClosedRegionFillActive || _state.currentTool?.id == MoveTool.toolId;
+
   Future<void> _fillClosedMaskRegionsAt(Offset canvasPoint) async {
     if (!_isInpaintMode || !mounted) {
       return;
     }
     final l10n = context.l10n;
-    final maskLayerName = l10n.editor_maskLayerName;
 
     try {
       // 蒙版按点击时的取景框导出，填充结果落回同一位置
@@ -1201,26 +1210,29 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
           break;
       }
 
-      final overlayBytes = fillResult.overlayBytes;
-      if (overlayBytes == null) {
+      final patch = fillResult.addedPatch;
+      if (patch == null) {
         throw Exception(l10n.editor_generateMaskOverlayFailed);
       }
-      // 超出取景框的蒙版图层保留，框外内容不随填充丢失
-      _removeAllMaskLayers(
-        preservedLayerIds: {
-          for (final layer in _state.layerManager.maskLayers)
-            if (EditorFrameGeometry.exceedsFrame(layer.contentBounds, region))
-              layer.id,
-        },
-      );
-      final layer = await _addMaskLayerAboveSource(
-        overlayBytes,
-        name: maskLayerName,
-        offset: region.topLeft,
-      );
-      if (layer == null) {
+      final ui.Image image;
+      try {
+        image = await _controller.processingService.decode(patch.bytes);
+      } on Object {
         throw Exception(l10n.editor_updateMaskLayerFailed);
       }
+      if (!mounted) {
+        image.dispose();
+        return;
+      }
+      _state.layerCommands.addMaskPixels(
+        image,
+        offset: region.topLeft.translate(
+          patch.left.toDouble(),
+          patch.top.toDouble(),
+        ),
+        newLayerName: l10n.editor_maskLayerName,
+        description: 'Fill Closed Mask Region',
+      );
 
       _state.requestUiUpdate();
       if (mounted) {
@@ -1254,25 +1266,6 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
       offset: offset,
       role: LayerRole.mask,
     );
-  }
-
-  Layer _addEmptyMaskLayerAboveSource({required String name}) {
-    return _state.layerManager.addLayer(
-      name: name,
-      index: _resolveMaskLayerInsertIndex(),
-      role: LayerRole.mask,
-    );
-  }
-
-  void _removeAllMaskLayers({Set<String> preservedLayerIds = const {}}) {
-    final removableLayerIds = _state.layerManager.maskLayers
-        .where((layer) => !preservedLayerIds.contains(layer.id))
-        .map((layer) => layer.id)
-        .toList(growable: false);
-
-    for (final layerId in removableLayerIds) {
-      _state.layerManager.removeLayer(layerId);
-    }
   }
 
   Future<void> _applyOutpaintEdges(
@@ -1369,11 +1362,12 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
       return;
     }
 
-    _removeAllMaskLayers();
+    _state.layerCommands.resetMaskLayers(
+      name: context.l10n.editor_maskLayerName,
+    );
     _state.clearSelection(saveHistory: false);
     _state.clearPreview();
     _focusedSelectionState.clear();
-    _addEmptyMaskLayerAboveSource(name: context.l10n.editor_maskLayerName);
     _state.setToolById(_focusedInpaintEnabled ? 'rect_selection' : 'brush');
     _refreshCompressionPlan();
     _state.requestUiUpdate();
@@ -1402,9 +1396,10 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
             ? DropOperation.copy
             : DropOperation.none;
       },
-      onPerformDrop: (event) async {
-        await _handleDroppedImageLayerDrop(event);
-      },
+      onPerformDrop: (event) => releaseNativeDropCallback(
+        () => _handleDroppedImageLayerDrop(event),
+        library: 'ImageEditorWorkspace',
+      ),
       child: child,
     );
   }
@@ -1449,121 +1444,19 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
       return;
     }
 
-    final l10n = context.l10n;
-    if (imageBytes.isEmpty) {
-      AppLogger.w('Dropped image is empty: $fileName', 'ImageEditorDrop');
-      AppToast.error(context, l10n.editor_emptyImageFile);
+    // 保留原图作为图片层插在当前图层上方，并带着变换框等待摆放
+    final placed = await importImageAsLayer(
+      context,
+      _state,
+      bytes: imageBytes,
+      layerName: _droppedImageLayerName(fileName),
+    );
+    if (!placed || !mounted) {
       return;
     }
-    if (imageBytes.length > _maxImportedImageBytes) {
-      final sizeMB = (imageBytes.length / (1024 * 1024)).toStringAsFixed(1);
-      AppLogger.w(
-        'Dropped image too large: ${imageBytes.length} bytes',
-        'ImageEditorDrop',
-      );
-      AppToast.error(context, l10n.editor_fileTooLarge(sizeMB));
-      return;
-    }
-
-    try {
-      final layerBytes = await _coverDroppedImageToCanvas(imageBytes);
-      if (!mounted) {
-        return;
-      }
-
-      // 铺满当前取景框，作为图片层插在当前图层上方
-      final layer = await _state.layerCommands.addImageLayer(
-        layerBytes,
-        name: _droppedImageLayerName(fileName),
-        offset: _state.frame.topLeft,
-      );
-      if (!mounted) {
-        return;
-      }
-      if (layer == null) {
-        AppToast.error(context, l10n.editor_parseImageFailed);
-        return;
-      }
-
-      _state.clearSelection(saveHistory: false);
-      _state.clearPreview();
-      _state.requestUiUpdate();
-      setState(() {});
-    } catch (e) {
-      AppLogger.w(
-        'Failed to import dropped image layer: $fileName, error=$e',
-        'ImageEditorDrop',
-      );
-      if (mounted) {
-        AppToast.error(context, l10n.editor_parseImageFailed);
-      }
-    }
-  }
-
-  Future<Uint8List> _coverDroppedImageToCanvas(Uint8List imageBytes) async {
-    final canvasWidth = _state.canvasSize.width.round();
-    final canvasHeight = _state.canvasSize.height.round();
-    final targetWidth = canvasWidth < 1 ? 1 : canvasWidth;
-    final targetHeight = canvasHeight < 1 ? 1 : canvasHeight;
-
-    ui.Codec? codec;
-    ui.Image? sourceImage;
-    ui.Image? targetImage;
-    try {
-      codec = await ui.instantiateImageCodec(imageBytes);
-      final frame = await codec.getNextFrame();
-      sourceImage = frame.image;
-
-      if (sourceImage.width == targetWidth &&
-          sourceImage.height == targetHeight) {
-        return imageBytes;
-      }
-
-      final sourceAspect = sourceImage.width / sourceImage.height;
-      final targetAspect = targetWidth / targetHeight;
-      final Rect sourceRect;
-      if (sourceAspect > targetAspect) {
-        final cropWidth = sourceImage.height * targetAspect;
-        sourceRect = Rect.fromLTWH(
-          (sourceImage.width - cropWidth) / 2,
-          0,
-          cropWidth,
-          sourceImage.height.toDouble(),
-        );
-      } else {
-        final cropHeight = sourceImage.width / targetAspect;
-        sourceRect = Rect.fromLTWH(
-          0,
-          (sourceImage.height - cropHeight) / 2,
-          sourceImage.width.toDouble(),
-          cropHeight,
-        );
-      }
-
-      final recorder = ui.PictureRecorder();
-      final canvas = Canvas(recorder);
-      canvas.drawImageRect(
-        sourceImage,
-        sourceRect,
-        Rect.fromLTWH(0, 0, targetWidth.toDouble(), targetHeight.toDouble()),
-        Paint()..filterQuality = FilterQuality.high,
-      );
-      targetImage = await recorder.endRecording().toImage(
-        targetWidth,
-        targetHeight,
-      );
-      final byteData = await targetImage.toByteData(
-        format: ui.ImageByteFormat.png,
-      );
-      if (byteData == null) {
-        throw StateError('Failed to encode dropped image layer');
-      }
-      return byteData.buffer.asUint8List();
-    } finally {
-      targetImage?.dispose();
-      sourceImage?.dispose();
-      codec?.dispose();
-    }
+    _state.clearPreview();
+    _state.requestUiUpdate();
+    setState(() {});
   }
 
   String _droppedImageLayerName(String fileName) {
@@ -1621,8 +1514,7 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
                 _state.framePreviewNotifier,
                 _state.toolChangeNotifier,
               ]),
-              // 封闭区域填充要点到取景框边缘附近，边缘拖动此时让出指针
-              builder: (context, _) => _isClosedRegionFillActive
+              builder: (context, _) => _toolNeedsFrameEdges
                   ? const SizedBox.shrink()
                   : OutpaintEdgeDragOverlay(
                       frame: _state.displayFrame,
@@ -1659,6 +1551,12 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
         Positioned.fill(
           child: MagicWandProgressOverlay(controller: _magicWandController),
         ),
+        Positioned(
+          left: 16,
+          right: 16,
+          bottom: 16,
+          child: Center(child: TransformSessionBar(state: _state)),
+        ),
       ],
     );
   }
@@ -1666,7 +1564,7 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
   bool _shouldSuppressCanvasPointerInput(Offset localPosition) {
     if (!_isInpaintMode ||
         _focusedInpaintEnabled ||
-        _isClosedRegionFillActive ||
+        _toolNeedsFrameEdges ||
         _frameController.isCommitting) {
       return false;
     }
@@ -1689,92 +1587,23 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
     final l10n = context.l10n;
     final maskLayerName = l10n.editor_maskLayerName;
     try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.image,
-        allowMultiple: false,
+      final picked = await pickEditorImageFile(context);
+      if (picked == null || !mounted) {
+        return;
+      }
+
+      // 蒙版层按 alpha 显示、导出按亮度判定，黑白蒙版不转 overlay 时黑色部分会显示成蒙版
+      final overlayBytes = await InpaintMaskUtils.maskToEditorOverlayAsync(
+        picked.bytes,
       );
-
-      if (result == null || result.files.isEmpty) {
-        // 用户取消了文件选择
+      if (!mounted) {
         return;
       }
-
-      final file = result.files.first;
-
-      // 验证文件扩展名（额外的安全检查）
-      if (file.path != null) {
-        final extension = file.path!.split('.').last.toLowerCase();
-        const validImageExtensions = [
-          'png',
-          'jpg',
-          'jpeg',
-          'webp',
-          'bmp',
-          'gif',
-        ];
-
-        if (!validImageExtensions.contains(extension)) {
-          AppLogger.w('Invalid file extension: $extension', 'ImageEditor');
-          if (mounted) {
-            AppToast.error(
-              context,
-              context.l10n.editor_unsupportedImageFormat(extension),
-            );
-          }
-          return;
-        }
-      }
-
-      // 读取文件字节数据
-      Uint8List? bytes;
-      if (file.bytes != null) {
-        bytes = file.bytes;
-      } else if (file.path != null) {
-        try {
-          bytes = await File(file.path!).readAsBytes();
-        } catch (e) {
-          AppLogger.e('Failed to read file: $e', 'ImageEditor');
-          if (mounted) {
-            AppToast.error(context, context.l10n.editor_readFileFailed(e));
-          }
-          return;
-        }
-      }
-
-      // 验证字节数据
-      if (bytes == null) {
-        AppLogger.w('File bytes is null', 'ImageEditor');
-        if (mounted) {
-          AppToast.error(context, l10n.editor_noFileData);
-        }
-        return;
-      }
-
-      // 检查文件是否为空
-      if (bytes.isEmpty) {
-        AppLogger.w('File is empty (0 bytes)', 'ImageEditor');
-        if (mounted) {
-          AppToast.error(context, l10n.editor_emptyImageFile);
-        }
-        return;
-      }
-
-      // 检查文件大小（限制为 50MB 以防止内存问题）
-      const maxFileSize = 50 * 1024 * 1024; // 50MB
-      if (bytes.length > maxFileSize) {
-        final sizeMB = (bytes.length / (1024 * 1024)).toStringAsFixed(1);
-        AppLogger.w('File too large: ${bytes.length} bytes', 'ImageEditor');
-        if (mounted) {
-          AppToast.error(context, l10n.editor_fileTooLarge(sizeMB));
-        }
-        return;
-      }
-
-      // 将蒙版添加为新图层，对齐当前取景框
-      final layer = await _addMaskLayerAboveSource(
-        bytes,
+      final layer = await _state.layerCommands.addImageLayer(
+        overlayBytes,
         name: maskLayerName,
         offset: _state.frame.topLeft,
+        role: LayerRole.mask,
       );
 
       if (layer != null) {
@@ -3006,9 +2835,13 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
         context: context,
         title: context.l10n.editor_layers,
         initialChildSize: 0.62,
-        builder: (context, scrollController) => PrimaryScrollController(
+        builder: (sheetContext, scrollController) => PrimaryScrollController(
           controller: scrollController,
-          child: LayerPanel(state: _state),
+          child: LayerPanel(
+            state: _state,
+            // 收起弹层露出画布上的变换框
+            onImageImported: () => Navigator.of(sheetContext).maybePop(),
+          ),
         ),
       ),
     );
@@ -3143,6 +2976,8 @@ class ImageEditorWorkspaceState extends State<ImageEditorWorkspace> {
                 ),
                 ('← ↑ → ↓', context.l10n.editor_shortcutNudge),
                 ('Shift + ← ↑ → ↓', context.l10n.editor_shortcutNudgeFar),
+                ('Ctrl+T', context.l10n.editor_shortcutFreeTransform),
+                ('Enter', context.l10n.editor_shortcutApplyTransform),
                 ('Esc', context.l10n.editor_shortcutCancelCurrentAction),
               ],
             ),

@@ -11,18 +11,9 @@ void main() {
   testWidgets('节日模板按钮的悬停与按压反馈画在按钮底色之上，点击套用模板', (tester) async {
     TimeCondition? changed;
     await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('en'),
-        localizationsDelegates: AppLocalizations.localizationsDelegates,
-        supportedLocales: AppLocalizations.supportedLocales,
-        home: Scaffold(
-          body: SingleChildScrollView(
-            child: TimeConditionPanel(
-              condition: TimeCondition.christmas(),
-              onConditionChanged: (condition) => changed = condition,
-            ),
-          ),
-        ),
+      _panelApp(
+        condition: TimeCondition.christmas(),
+        onChanged: (condition) => changed = condition,
       ),
     );
     await tester.pump();
@@ -48,19 +39,10 @@ void main() {
   testWidgets('只读时模板按钮不响应悬停与点击', (tester) async {
     TimeCondition? changed;
     await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('en'),
-        localizationsDelegates: AppLocalizations.localizationsDelegates,
-        supportedLocales: AppLocalizations.supportedLocales,
-        home: Scaffold(
-          body: SingleChildScrollView(
-            child: TimeConditionPanel(
-              condition: TimeCondition.christmas(),
-              readOnly: true,
-              onConditionChanged: (condition) => changed = condition,
-            ),
-          ),
-        ),
+      _panelApp(
+        condition: TimeCondition.christmas(),
+        readOnly: true,
+        onChanged: (condition) => changed = condition,
       ),
     );
     await tester.pump();
@@ -76,4 +58,95 @@ void main() {
     await tester.pump();
     expect(changed, isNull);
   });
+
+  testWidgets('只有一个启用开关：停用的旧条件显示为关闭，打开后沿用原日期', (tester) async {
+    final emitted = <TimeCondition?>[];
+    await tester.pumpWidget(
+      _panelApp(
+        condition: TimeCondition.halloween().copyWith(enabled: false),
+        onChanged: emitted.add,
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(Switch), findsOneWidget);
+    expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+
+    await tester.tap(find.byType(Switch));
+    await tester.pump();
+    expect(emitted.single?.enabled, isTrue);
+    expect(emitted.single?.startMonth, 10);
+    expect(find.text(_l10n.common_enabled), findsNothing);
+    expect(find.byType(Switch), findsNWidgets(2));
+
+    await tester.tap(find.byType(Switch).first);
+    await tester.pump();
+    expect(emitted, hasLength(2));
+    expect(emitted.last, isNull);
+  });
+
+  testWidgets('关闭每年重复后出现年份，默认今年并可改选', (tester) async {
+    final emitted = <TimeCondition?>[];
+    final thisYear = DateTime.now().year;
+    await tester.pumpWidget(
+      _panelApp(condition: TimeCondition.christmas(), onChanged: emitted.add),
+    );
+    await tester.pump();
+    expect(find.text(_l10n.diy_year), findsNothing);
+
+    await tester.ensureVisible(find.byType(Switch).last);
+    await tester.tap(find.byType(Switch).last);
+    await tester.pump();
+    expect(emitted.last?.recurring, isFalse);
+    expect(emitted.last?.specificYear, thisYear);
+    expect(find.text(_l10n.diy_repeatOnceHint), findsOneWidget);
+
+    final yearField = find.widgetWithText(
+      DropdownButtonFormField<int>,
+      _l10n.diy_year,
+    );
+    await tester.ensureVisible(yearField);
+    await tester.tap(yearField);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('${thisYear + 1}').last);
+    await tester.pumpAndSettle();
+    expect(emitted.last?.specificYear, thisYear + 1);
+    expect(emitted.last?.isActive(DateTime(thisYear, 12, 25)), isFalse);
+    expect(emitted.last?.isActive(DateTime(thisYear + 1, 12, 25)), isTrue);
+  });
+
+  testWidgets('未选年份的旧数据如实提示每年生效', (tester) async {
+    await tester.pumpWidget(
+      _panelApp(
+        condition: TimeCondition.christmas().copyWith(recurring: false),
+        onChanged: (_) {},
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text(_l10n.diy_yearUnsetHint), findsOneWidget);
+  });
+}
+
+final _l10n = lookupAppLocalizations(const Locale('en'));
+
+Widget _panelApp({
+  required TimeCondition condition,
+  required ValueChanged<TimeCondition?> onChanged,
+  bool readOnly = false,
+}) {
+  return MaterialApp(
+    locale: const Locale('en'),
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    supportedLocales: AppLocalizations.supportedLocales,
+    home: Scaffold(
+      body: SingleChildScrollView(
+        child: TimeConditionPanel(
+          condition: condition,
+          readOnly: readOnly,
+          onConditionChanged: onChanged,
+        ),
+      ),
+    ),
+  );
 }

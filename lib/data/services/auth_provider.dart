@@ -10,6 +10,7 @@ import '../../core/network/nai_api_endpoint.dart';
 import '../../core/network/nai_api_endpoint_service.dart';
 import '../../core/services/auth_error_service.dart';
 import '../../core/storage/secure_storage_service.dart';
+import '../../core/storage/secure_storage_unavailable_exception.dart';
 import '../../core/utils/app_logger.dart';
 import '../datasources/remote/nai_auth_api_service.dart';
 import '../models/auth/saved_account.dart';
@@ -150,6 +151,10 @@ class AuthState {
 
   /// 从异常解析错误码
   static (AuthErrorCode, int?) parseError(Object e) {
+    if (e is SecureStorageUnavailableException) {
+      return (AuthErrorCode.secureStorageUnavailable, null);
+    }
+
     if (e is NaiEndpointIncompatibleException) {
       return (AuthErrorCode.endpointIncompatible, e.statusCode);
     }
@@ -271,6 +276,16 @@ class AuthNotifier extends _$AuthNotifier {
 
   /// 检查已存储的认证状态
   Future<void> _checkExistingAuth() async {
+    try {
+      await _restoreStoredSession();
+    } on SecureStorageUnavailableException catch (error) {
+      // 凭据读不到不等于已登出，保留为可重试的失败状态，避免清掉仍然有效的会话
+      AppLogger.w('Auto-login paused: $error', 'Auth');
+      state = autoLoginFailureState(error);
+    }
+  }
+
+  Future<void> _restoreStoredSession() async {
     // 0. 检查自动登录设置（默认启用，确保重启后自动恢复登录）
     final prefs = await SharedPreferences.getInstance();
     final autoLogin = prefs.getBool(_autoLoginKey) ?? true;
@@ -380,6 +395,8 @@ class AuthNotifier extends _$AuthNotifier {
           endpointService.resetToOfficial();
         }
         await storage.clearAuth();
+      } on SecureStorageUnavailableException {
+        rethrow;
       } catch (e) {
         // Token 无效，清除后尝试自动登录
         AppLogger.w('Stored token invalid, trying auto-login...');
@@ -559,13 +576,8 @@ class AuthNotifier extends _$AuthNotifier {
 
       final apiService = ref.read(naiAuthApiServiceProvider);
       final storage = ref.read(secureStorageServiceProvider);
-      endpointService.resetToOfficial();
 
-      // 2. 先清除可能已污染的存储 token，确保验证使用干净的 token
-      AppLogger.auth('Clearing old token before validation...');
-      await storage.clearAuth();
-
-      // 3. 验证 Token 有效性
+      // 2. 验证请求显式携带新 Token，成功前保留当前会话凭据与端点。
       AppLogger.auth('Validating token...');
       final validation = await apiService.validateToken(
         token,
@@ -576,12 +588,12 @@ class AuthNotifier extends _$AuthNotifier {
       // 3. 保存 Token 到全局存储（用于 API 调用）
       // Persistent Token 不会过期，设置一个远期过期时间
       AppLogger.auth('Saving token to storage, length: ${token.length}');
+      endpointService.resetToOfficial();
       await storage.saveAuth(
         accessToken: token,
         expiry: DateTime.now().add(const Duration(days: 365 * 10)),
         email: displayName ?? 'Token User',
       );
-
       // 验证 token 确实被保存了
       final savedToken = await storage.getAccessToken();
       AppLogger.auth(
@@ -1052,7 +1064,12 @@ class AuthNotifier extends _$AuthNotifier {
     );
 
     final storage = ref.read(secureStorageServiceProvider);
-    await storage.clearAuth();
+    try {
+      await storage.clearAuth();
+    } on SecureStorageUnavailableException catch (error) {
+      // 内存会话已清除；磁盘残留只影响下次启动的自动登录，不能因此卡住登出
+      AppLogger.w('[AuthNotifier] stored auth not cleared: $error', 'AUTH');
+    }
     ref.read(naiApiEndpointServiceProvider).resetToOfficial();
 
     if (errorCode != null) {

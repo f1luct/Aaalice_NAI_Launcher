@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -6,6 +7,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nai_launcher/core/autocomplete/autocomplete_cache_database.dart';
 import 'package:nai_launcher/core/autocomplete/completion_models.dart';
 import 'package:nai_launcher/core/autocomplete/danbooru_completion_source.dart';
+
+import '../../helpers/database_error_probe.dart';
+import '../../helpers/log_capture.dart';
 
 void main() {
   test(
@@ -215,6 +219,53 @@ void main() {
     expect(adapter.requests, hasLength(3));
     expect(result, isEmpty);
   });
+
+  test('cache write failures never quote the typed tag into the log', () async {
+    final adapter = _QueueAdapter([
+      ResponseBody.fromString(
+        '[{"name":"lighthouse","category":0,"post_count":10}]',
+        200,
+        headers: {
+          Headers.contentTypeHeader: [Headers.jsonContentType],
+        },
+      ),
+      ResponseBody.fromString(
+        '{"related_tags":[]}',
+        200,
+        headers: {
+          Headers.contentTypeHeader: [Headers.jsonContentType],
+        },
+      ),
+    ]);
+    final dio = Dio(BaseOptions(baseUrl: 'https://danbooru.donmai.us'))
+      ..httpClientAdapter = adapter;
+    final source = DanbooruCompletionSource(
+      dio: dio,
+      cache: _FailingWriteCache(),
+    );
+
+    final logs = await captureLogs(() async {
+      await source.search(_query('lighthouse'));
+      await source.relatedTags('lighthouse');
+    });
+
+    expect(logs.where((line) => line.contains('Danbooru')), hasLength(2));
+    expect(logs.where((line) => line.contains('lighthouse')), isEmpty);
+  });
+
+  test('dropped connections never quote the request URI into the log', () async {
+    final dio = Dio(BaseOptions(baseUrl: 'https://danbooru.donmai.us'))
+      ..httpClientAdapter = _DroppedConnectionAdapter();
+    final source = DanbooruCompletionSource(dio: dio, cache: _MemoryCache());
+
+    final logs = await captureLogs(() async {
+      await source.search(_query('lighthouse'));
+      await source.relatedTags('lighthouse');
+    });
+
+    expect(logs.where((line) => line.contains(' failed')), hasLength(2));
+    expect(logs.where((line) => line.contains('lighthouse')), isEmpty);
+  });
 }
 
 CompletionQuery _query(String token, {int limit = 20}) => CompletionQuery(
@@ -240,6 +291,30 @@ class _MemoryCache extends AutocompleteCacheDatabase {
       fetchedAt: DateTime.now().toUtc(),
     );
   }
+}
+
+class _FailingWriteCache extends _MemoryCache {
+  @override
+  Future<void> putRemote(String key, List<Map<String, dynamic>> payload) async {
+    throw await databaseErrorCarrying(key);
+  }
+}
+
+class _DroppedConnectionAdapter implements HttpClientAdapter {
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) {
+    throw HttpException(
+      'Connection closed before full header was received',
+      uri: options.uri,
+    );
+  }
+
+  @override
+  void close({bool force = false}) {}
 }
 
 class _QueueAdapter implements HttpClientAdapter {

@@ -71,25 +71,31 @@ class AssetProtectionGuard {
     required BuildContext context,
     required WidgetRef ref,
     int? cost,
-  }) {
-    final settings = ref.read(shareImageSettingsProvider);
-    if (!settings.effectiveWarnHighAnlasCost) {
-      return Future.value(true);
+  }) async {
+    final threshold = ref
+        .read(shareImageSettingsProvider)
+        .effectiveHighAnlasCostThreshold;
+    if (threshold == null) {
+      return true;
     }
 
-    final estimatedCost = cost ?? ref.read(estimatedCostProvider) ?? 0;
-    if (estimatedCost < settings.highAnlasCostThreshold) {
-      return Future.value(true);
+    final estimatedCost =
+        cost ??
+        await readSettledEstimatedCost(
+          ProviderScope.containerOf(context, listen: false),
+        );
+    if (estimatedCost < threshold) {
+      return true;
+    }
+    if (!context.mounted) {
+      return false;
     }
 
     final l10n = context.l10n;
     return ThemedConfirmDialog.show(
       context: context,
       title: l10n.settings_highAnlasCostTitle,
-      content: l10n.settings_highAnlasCostContent(
-        estimatedCost,
-        settings.highAnlasCostThreshold,
-      ),
+      content: l10n.settings_highAnlasCostContent(estimatedCost, threshold),
       confirmText: l10n.settings_continueGeneration,
       cancelText: l10n.common_cancel,
       type: ThemedConfirmDialogType.warning,

@@ -325,8 +325,11 @@ extension ImageParamsExtension on ImageParams {
   /// 实际发送的步数。
   int get effectiveSteps => capabilities.fixedSettings?.steps ?? steps;
 
-  /// 实际发送的采样器（V4 起的 DDIM 回退由请求服务处理）。
-  String get effectiveSampler => capabilities.fixedSettings?.sampler ?? sampler;
+  /// 实际发送的采样器：模型固定的采样器优先，DDIM 按模型换算。
+  String get effectiveSampler => Samplers.resolveForModel(
+    capabilities.fixedSettings?.sampler ?? sampler,
+    model,
+  );
 
   /// 实际发送的噪声调度：模型不开放选择时与网页端一样固定为 karras。
   String get effectiveNoiseSchedule => capabilities.supportsNoiseSchedule
@@ -355,6 +358,16 @@ extension ImageParamsExtension on ImageParams {
       ],
     );
   }
+
+  /// 高级选项里是否显示 SMEA：只有 V3 系列在非 DDIM 采样器下可用。
+  bool get showsSmeaOptions => isV3Model && !sampler.contains('ddim');
+
+  /// 高级选项里是否显示 CFG Rescale：V4 起的模型都显示，不发送时显示为停用。
+  bool get showsCfgRescaleOption => isV4Model;
+
+  /// 「高级选项」是否有可显示的控件，两种参数面板布局据此决定是否渲染该分组。
+  bool get hasAdvancedSamplingOptions =>
+      showsSmeaOptions || showsCfgRescaleOption;
 
   /// 开启端到端放大后服务端实际输出的尺寸。
   (int, int) get outputSize => effectiveE2eUpscale

@@ -5,6 +5,7 @@ import '../../../core/platform/platform_capabilities.dart';
 import '../../../core/utils/localization_extension.dart';
 import '../../providers/update_provider.dart';
 import 'update_check_dialog.dart';
+import 'update_error_text.dart';
 
 /// Keeps update notices outside page layout while bounding long notice content.
 class UpdateNoticeOverlay extends StatelessWidget {
@@ -65,7 +66,7 @@ class UpdateNoticeBanner extends ConsumerWidget {
         ? context.l10n.updateNoticeReady(version)
         : context.l10n.updateNoticeAvailable(version);
     final subtitle = isError
-        ? (state.errorMessage ?? context.l10n.updateError)
+        ? describeUpdateError(context, state)
         : isReady
         ? context.l10n.updateNoticeReadySubtitle
         : state.versionInfo?.supportsInAppInstall == true

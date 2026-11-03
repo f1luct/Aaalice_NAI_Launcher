@@ -49,10 +49,9 @@ class NetworkSettingsSectionState
     final proxySettings = ref.watch(proxySettingsNotifierProvider);
     final detectedProxy = ref.watch(detectedSystemProxyProvider);
     final l10n = context.l10n;
-    // 偏离上游：上游这一段无平台门控，auto/manual 选择器全平台渲染。移动端的
-    // auto 模式永远拿不到地址（ProxyService.getSystemProxyAddress 对 iOS/Android
-    // 返回 null），选中它等于静默失效，所以整段隐藏；ProxySettingsNotifier 已把
-    // 移动端的模式钉成 manual，下面的手动地址输入框照常显示。
+    // 移动端读不到系统代理（ProxyService.getSystemProxyAddress 返回 null），
+    // auto 选了也拿不到地址，所以不显示模式选择；resolveProxyMode 已把移动端
+    // 折算成 manual，下面的手动地址输入框照常显示。
     final supportsAutomaticProxyDetection =
         !PlatformCapabilities.current.isMobile;
 
@@ -90,7 +89,7 @@ class NetworkSettingsSectionState
                     AppToast.info(
                       // ignore: use_build_context_synchronously
                       context,
-                      l10n.settings_proxyRestartHint,
+                      l10n.settings_proxyAppliedHint,
                     );
                   }
                 },
@@ -167,7 +166,6 @@ class NetworkSettingsSectionState
                           decoration: InputDecoration(
                             labelText: l10n.settings_proxyHost,
                             hintText: '127.0.0.1',
-                            border: const OutlineInputBorder(),
                             isDense: true,
                           ),
                           textInputAction: TextInputAction.next,
@@ -178,7 +176,6 @@ class NetworkSettingsSectionState
                           decoration: InputDecoration(
                             labelText: l10n.settings_proxyPort,
                             hintText: '7890',
-                            border: const OutlineInputBorder(),
                             isDense: true,
                           ),
                           keyboardType: TextInputType.number,

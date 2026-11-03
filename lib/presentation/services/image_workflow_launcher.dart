@@ -13,6 +13,7 @@ import '../../data/models/image/image_params.dart';
 import '../../data/models/metadata/metadata_import_options.dart';
 import '../../data/services/image_metadata_service.dart';
 import '../providers/generation/image_workflow_controller.dart';
+import '../providers/generation/workflow_panel_reveal_provider.dart';
 import '../providers/image_generation_provider.dart';
 import '../providers/krita/krita_bridge_notifier.dart';
 import '../providers/quality_preset_provider.dart';
@@ -170,9 +171,12 @@ class ImageWorkflowLauncher {
 
     final effectiveMask =
         result.maskImage != null &&
-            InpaintMaskUtils.hasMaskedPixels(result.maskImage!)
+            await InpaintMaskUtils.hasMaskedPixelsAsync(result.maskImage!)
         ? result.maskImage
         : null;
+    if (!context.mounted || (isCurrent != null && !isCurrent())) {
+      return false;
+    }
     applyInpaintEditorResult(workflowNotifier, result, effectiveMask);
     if (effectiveMask != null) {
       AppToast.success(context, context.l10n.img2img_inpaintMaskReady);
@@ -238,6 +242,7 @@ class ImageWorkflowLauncher {
     workflowNotifier.replaceSourceImage(imageBytes);
     workflowNotifier.enterEnhanceMode();
     workflowNotifier.setPanelExpanded(true);
+    read(workflowPanelRevealProvider.notifier).request();
   }
 
   static Future<void> openInpaint(
@@ -263,6 +268,7 @@ class ImageWorkflowLauncher {
     workflowNotifier.replaceSourceImage(imageBytes);
     workflowNotifier.enterUpscaleMode();
     workflowNotifier.setPanelExpanded(true);
+    read(workflowPanelRevealProvider.notifier).request();
   }
 
   static Future<void> openDirectorTools(
@@ -340,12 +346,7 @@ class ImageWorkflowLauncher {
     if (isCurrent != null) prepareSource();
 
     if (metadata != null && metadata.hasData) {
-      _applyVariationMetadata(
-        metadata,
-        read,
-        paramsNotifier,
-        fallbackModel: read(generationParamsNotifierProvider).model,
-      );
+      _applyVariationMetadata(metadata, read, paramsNotifier);
     } else {
       paramsNotifier.randomizeSeed();
       paramsNotifier.updateStrength(0.45);
@@ -384,13 +385,11 @@ class ImageWorkflowLauncher {
   static void _applyVariationMetadata(
     NaiImageMetadata metadata,
     _ImageWorkflowRead read,
-    GenerationParamsNotifier notifier, {
-    required String fallbackModel,
-  }) {
+    GenerationParamsNotifier notifier,
+  ) {
     MetadataImportApplier.applyPromptAndGenerationParams(
       metadata: metadata,
       options: MetadataImportOptions.all(),
-      currentModel: fallbackModel,
       target: MetadataImportTarget(
         updatePrompt: notifier.updatePrompt,
         updateNegativePrompt: notifier.updateNegativePrompt,

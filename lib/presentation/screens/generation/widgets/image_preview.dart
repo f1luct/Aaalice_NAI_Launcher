@@ -20,7 +20,6 @@ import 'package:path/path.dart' as p;
 import '../../../../core/enums/precise_ref_type.dart';
 import '../../../../core/platform/platform_capabilities.dart';
 import '../../../../core/shortcuts/default_shortcuts.dart';
-import '../../../../core/shortcuts/shortcut_config.dart';
 import '../../../../core/shortcuts/shortcut_manager.dart';
 import '../../../../core/utils/app_logger.dart';
 import '../../../../core/utils/file_explorer_utils.dart';
@@ -31,7 +30,6 @@ import '../../../../data/models/image/image_stream_chunk.dart';
 import '../../../providers/alias_resolver_service.dart';
 import '../../../../data/services/image_metadata_service.dart';
 import '../../../adaptive/window_size_class.dart';
-import '../../../providers/generation/generation_error_classifier.dart';
 import '../../../providers/generation/generation_params_selectors.dart';
 import '../../../providers/generation/image_generation_selectors.dart';
 import '../../../providers/generation/generation_view_state_provider.dart';
@@ -42,7 +40,6 @@ import '../../../providers/character_prompt_provider.dart';
 import '../../../providers/fixed_tags_provider.dart';
 import '../../../providers/image_generation_provider.dart';
 import '../../../providers/preview_transparency_provider.dart';
-import '../../../providers/prompt_config_provider.dart';
 import '../../../providers/reverse_prompt_provider.dart';
 import '../../../providers/tag_library_page_provider.dart';
 import '../../../providers/shortcuts_provider.dart';
@@ -56,10 +53,13 @@ import '../../../widgets/common/transparency_background.dart';
 import '../../../widgets/discord_share/discord_share_dialog.dart';
 import '../../../widgets/image_editor/image_editor_screen.dart';
 import '../../../utils/fixed_tag_metadata_matcher.dart';
+import '../../../utils/generation_error_l10n.dart';
 import '../../../utils/image_detail_opener.dart';
 import '../../../utils/krita_send_helper.dart';
 import '../../../utils/precise_ref_library_import_helper.dart';
 import '../../tag_library_page/widgets/entry_add_dialog.dart';
+import '../../../widgets/common/image_card_size.dart';
+import '../../../widgets/common/image_comparison_toolbar.dart';
 import '../../../widgets/common/image_comparison_view.dart';
 import 'preview_info_bar.dart';
 
@@ -72,17 +72,20 @@ class PreviewNavShortcuts extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final focusNode = ref.watch(generationPreviewFocusNodeProvider);
     final behavior = ref.watch(historyClickBehaviorNotifierProvider);
-    if (behavior != HistoryClickBehavior.selectPreview) {
-      return Focus(focusNode: focusNode, child: child);
-    }
 
-    final config = ref
-        .watch(shortcutConfigNotifierProvider)
-        .when(
-          data: (value) => value,
-          loading: ShortcutConfig.createDefault,
-          error: (_, _) => ShortcutConfig.createDefault(),
-        );
+    // 无绑定时也保留 CallbackShortcuts，结构切换会让预览子树重挂并丢失焦点
+    return CallbackShortcuts(
+      bindings: behavior == HistoryClickBehavior.selectPreview
+          ? _resolveBindings(ref)
+          : const {},
+      child: Focus(focusNode: focusNode, child: child),
+    );
+  }
+
+  Map<ShortcutActivator, VoidCallback> _resolveBindings(WidgetRef ref) {
+    final config = resolveDispatchShortcutConfig(
+      ref.watch(shortcutConfigNotifierProvider),
+    );
     final bindings = <ShortcutActivator, VoidCallback>{};
     if (config.enableShortcuts) {
       void register(String id, VoidCallback callback) {
@@ -107,10 +110,7 @@ class PreviewNavShortcuts extends ConsumerWidget {
         ref.read(generationPreviewSelectionProvider.notifier).selectNext,
       );
     }
-
-    final focusedChild = Focus(focusNode: focusNode, child: child);
-    if (bindings.isEmpty) return focusedChild;
-    return CallbackShortcuts(bindings: bindings, child: focusedChild);
+    return bindings;
   }
 }
 
@@ -559,122 +559,39 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
     BuildContext context,
   ) {
     // 解析错误代码和详情
-    final (errorTitle, errorHint) = _parseApiError(message, context);
+    final (errorTitle, errorHint) = describeGenerationError(context, message);
 
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Icon(Icons.error_outline, size: 64, color: theme.colorScheme.error),
-        const SizedBox(height: 16),
-        Text(
-          errorTitle,
-          style: theme.textTheme.titleMedium?.copyWith(
-            color: theme.colorScheme.error,
-          ),
-        ),
-        if (errorHint != null) ...[
-          const SizedBox(height: 8),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 32),
-            child: Text(
-              errorHint,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-              ),
-              textAlign: TextAlign.center,
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.error_outline, size: 64, color: theme.colorScheme.error),
+          const SizedBox(height: 16),
+          Text(
+            errorTitle,
+            style: theme.textTheme.titleMedium?.copyWith(
+              color: theme.colorScheme.error,
             ),
+            textAlign: TextAlign.center,
           ),
-        ],
-      ],
-    );
-  }
-
-  /// 解析 API 错误代码，返回 (标题, 提示)
-  (String, String?) _parseApiError(String? message, BuildContext context) {
-    if (message == null || message.isEmpty) {
-      return (context.l10n.generation_generationFailed, null);
-    }
-
-    if (isStreamingGenerationUnsupportedError(message)) {
-      return (
-        context.l10n.generation_streamingUnsupported,
-        context.l10n.generation_streamingUnsupportedHint,
-      );
-    }
-
-    // 取消操作
-    if (message == 'Cancelled') {
-      return (context.l10n.generation_cancelGeneration, null);
-    }
-
-    // 解析错误代码格式: "ERROR_CODE|详情"
-    final parts = message.split('|');
-    final errorCode = parts[0];
-    final details = parts.length > 1 ? parts[1] : null;
-
-    switch (errorCode) {
-      case 'AUTH_REQUIRED':
-        return (
-          context.l10n.settings_notLoggedIn,
-          context.l10n.settings_goToLoginPage,
-        );
-      case UnsupportedRandomPromptModelException.errorCode:
-        return (
-          context.l10n.randomPrompt_unsupportedModel,
-          context.l10n.randomPrompt_unsupportedModelHint,
-        );
-      case 'GENERATION_ERROR_INVALID_RESOLUTION':
-        if (parts.length >= 5) {
-          final width = int.tryParse(parts[1]);
-          final height = int.tryParse(parts[2]);
-          final suggestedWidth = int.tryParse(parts[3]);
-          final suggestedHeight = int.tryParse(parts[4]);
-          if (width != null &&
-              height != null &&
-              suggestedWidth != null &&
-              suggestedHeight != null) {
-            return (
-              context.l10n.generation_invalidResolution,
-              context.l10n.generation_invalidResolutionHint(
-                width,
-                height,
-                suggestedWidth,
-                suggestedHeight,
+          if (errorHint != null) ...[
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Text(
+                errorHint,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                ),
+                textAlign: TextAlign.center,
               ),
-            );
-          }
-        }
-        return (context.l10n.generation_invalidResolution, message);
-      case 'API_ERROR_429':
-        return (context.l10n.api_error_429, context.l10n.api_error_429_hint);
-      case 'API_ERROR_401':
-        return (context.l10n.api_error_401, context.l10n.api_error_401_hint);
-      case 'API_ERROR_402':
-        return (context.l10n.api_error_402, context.l10n.api_error_402_hint);
-      case 'API_ERROR_400':
-        return ('${context.l10n.common_error} (400)', details);
-      case 'API_ERROR_500':
-        return (context.l10n.api_error_500, context.l10n.api_error_500_hint);
-      case 'API_ERROR_503':
-        return (context.l10n.api_error_503, context.l10n.api_error_503_hint);
-      case 'API_ERROR_TIMEOUT':
-        return (
-          context.l10n.api_error_timeout,
-          context.l10n.api_error_timeout_hint,
-        );
-      case 'API_ERROR_NETWORK':
-        return (
-          context.l10n.api_error_network,
-          context.l10n.api_error_network_hint,
-        );
-      default:
-        // 未知错误或其他 HTTP 错误
-        if (errorCode.startsWith('API_ERROR_HTTP_')) {
-          final code = errorCode.replaceFirst('API_ERROR_HTTP_', '');
-          return ('${context.l10n.common_error} (HTTP $code)', details);
-        }
-        return (context.l10n.generation_generationFailed, message);
-    }
+            ),
+          ],
+        ],
+      ),
+    );
   }
 
   Widget _buildImageView(
@@ -684,8 +601,16 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
     ThemeData theme,
   ) {
     final comparisonAvailable = image.canCompareWithSource;
+    // 对比会遮住选中态，批量选择期间暂停对比，避免操作看不见的已选图
+    final selectionActive = ref.watch(
+      generationImageCardSelectionProvider.select(
+        (selection) => selection.isActive,
+      ),
+    );
     final comparisonEnabled =
-        comparisonAvailable && ref.watch(generationComparisonEnabledProvider);
+        comparisonAvailable &&
+        !selectionActive &&
+        ref.watch(generationComparisonEnabledProvider);
 
     // 信息条紧贴图片下沿并与图片左对齐（官网 bottom.start 口径），
     // 因此先扣掉信息条高度再按比例算卡片尺寸，避免二者互相挤压。
@@ -700,9 +625,16 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
                 constraints.maxHeight - PreviewInfoBar.heightFor(context) - gap,
               )
             : constraints.maxHeight;
-        final cardSize = _fitAspectRatio(
+        final comparisonFooterHeight = comparisonEnabled
+            ? ImageComparisonToolbar.singleRowHeight(context)
+            : 0.0;
+        final cardSize = fitImageCardSize(
           aspectRatio: image.aspectRatio,
           maxSize: Size(constraints.maxWidth, availableHeight),
+          footerHeight: comparisonFooterHeight,
+          minWidth: comparisonEnabled
+              ? ImageComparisonToolbar.singleRowWidth(context)
+              : 0,
         );
 
         return Column(
@@ -717,6 +649,7 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
                 image: image,
                 showIndex: false,
                 comparisonEnabled: comparisonEnabled,
+                comparisonFooterHeight: comparisonFooterHeight,
               ),
             ),
             SizedBox(height: gap),
@@ -728,14 +661,7 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
                   image: image,
                   comparisonEnabled: comparisonEnabled,
                   onComparisonChanged: comparisonAvailable
-                      ? (enabled) =>
-                            ref
-                                    .read(
-                                      generationComparisonEnabledProvider
-                                          .notifier,
-                                    )
-                                    .state =
-                                enabled
+                      ? (enabled) => _setComparisonEnabled(ref, enabled)
                       : null,
                 ),
               ),
@@ -746,6 +672,13 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
     );
   }
 
+  void _setComparisonEnabled(WidgetRef ref, bool enabled) {
+    if (enabled && ref.read(generationImageCardSelectionProvider).isActive) {
+      ref.read(generationImageCardSelectionProvider.notifier).exit();
+    }
+    ref.read(generationComparisonEnabledProvider.notifier).state = enabled;
+  }
+
   Widget _buildGeneratedImageCard({
     required BuildContext context,
     required WidgetRef ref,
@@ -753,10 +686,14 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
     required bool showIndex,
     int? index,
     bool comparisonEnabled = false,
+    double comparisonFooterHeight = 0,
   }) {
     final imageBytes = image.bytes;
     final canUseAsInput = image.canUseAsGenerationInput;
     final isFailedSnapshot = image.isFailedStreamSnapshot;
+    final transparencyStyle = ref.watch(previewTransparencyNotifierProvider);
+    final cardSelection = ref.watch(generationImageCardSelectionProvider);
+    final canSelect = image.canBulkSelect && !comparisonEnabled;
 
     final card = SelectableImageCard(
       imageBytes: imageBytes,
@@ -765,9 +702,7 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
       index: index,
       showIndex: showIndex,
       // 透明像素透出所选底色（棋盘格/纯色），与官网结果区一致
-      underlay: TransparencyBackgroundLayer(
-        style: ref.watch(previewTransparencyNotifierProvider),
-      ),
+      underlay: TransparencyBackgroundLayer(style: transparencyStyle),
       completionPreview: ref.watch(
         imageGenerationNotifierProvider.select(
           (state) => state.completionPreviews[image.id],
@@ -778,16 +713,19 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
               key: ValueKey('generation-image-comparison-${image.id}'),
               sourceImageBytes: image.comparisonSource!.bytes,
               generatedImageBytes: imageBytes,
+              fit: BoxFit.contain,
+              imageBackdrop: TransparencyBackgroundLayer(
+                style: transparencyStyle,
+              ),
             )
           : null,
+      imageContentFooterHeight: comparisonFooterHeight,
       hoverEffectsEnabled: !comparisonEnabled,
       enableHoverScale: !comparisonEnabled,
-      enableSelection: image.canBulkSelect && !comparisonEnabled,
+      enableSelection: canSelect,
       showSelectionOnHover: false,
-      selectionMode: ref.watch(generationImageCardSelectionProvider).isActive,
-      isSelected: ref
-          .watch(generationImageCardSelectionProvider)
-          .isSelected(image.id),
+      selectionMode: cardSelection.isActive,
+      isSelected: cardSelection.isSelected(image.id),
       allowRepeatedModifierTaps: true,
       onSelectionChanged: image.canBulkSelect
           ? (selected) {
@@ -799,7 +737,7 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
                   : selection.deselect(image.id);
             }
           : null,
-      onLongPress: image.canBulkSelect
+      onLongPress: canSelect
           ? () => ref
                 .read(generationImageCardSelectionProvider.notifier)
                 .enterAndSelect(image.id)
@@ -876,10 +814,7 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
               MobileWorkflowPanelReveal.request();
             }
           : null,
-      // 偏离上游：上游只判 canUseAsInput。Krita 桥接是桌面专属能力
-      // （PlatformCapabilities.supportsKritaBridge => isDesktop），
-      // iOS 预览菜单仍会出现「发送到 Krita」，点了只弹「未连接」。
-      // 同一行上游自己给 onOpenInExplorer 用了 supportsOpenFolder，只漏了这一项。
+      // Krita 桥接只在桌面可用，移动端菜单里出现这一项点了只会提示未连接
       onSendToKrita:
           canUseAsInput && PlatformCapabilities.current.supportsKritaBridge
           ? () => KritaSendHelper.sendImageBytes(
@@ -914,6 +849,7 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
       fileName: _previewImageFileName(image),
       sourceFilePath: image.filePath,
       enabled: !comparisonEnabled,
+      preheatHistoryShareFile: true,
       child: card,
     );
   }
@@ -1084,7 +1020,7 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
   }) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final cardSize = _fitAspectRatio(
+        final cardSize = fitImageCardSize(
           aspectRatio: aspectRatio,
           maxSize: Size(constraints.maxWidth, constraints.maxHeight),
         );
@@ -1097,28 +1033,6 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
           ),
         );
       },
-    );
-  }
-
-  Size _fitAspectRatio({required double aspectRatio, required Size maxSize}) {
-    final safeAspectRatio = aspectRatio.isFinite && aspectRatio > 0
-        ? aspectRatio
-        : 1.0;
-    final maxWidth = maxSize.width.isFinite ? max(0.0, maxSize.width) : 500.0;
-    final maxHeight = maxSize.height.isFinite
-        ? max(0.0, maxSize.height)
-        : 650.0;
-
-    var width = maxWidth;
-    var height = width / safeAspectRatio;
-    if (height > maxHeight) {
-      height = maxHeight;
-      width = height * safeAspectRatio;
-    }
-
-    return Size(
-      width.clamp(0.0, maxWidth).toDouble(),
-      height.clamp(0.0, maxHeight).toDouble(),
     );
   }
 

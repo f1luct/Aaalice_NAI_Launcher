@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -14,12 +15,16 @@ import 'package:nai_launcher/core/platform/platform_capabilities.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/data/services/local_onnx_model_service.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
+import 'package:nai_launcher/presentation/providers/local_tagger_models_provider.dart';
 import 'package:nai_launcher/core/database/providers/data_source_cache_provider.dart';
 import 'package:nai_launcher/presentation/screens/settings/sections/storage_settings_section.dart';
 import 'package:nai_launcher/presentation/screens/settings/widgets/cache_statistics_tile.dart';
 import 'package:nai_launcher/presentation/screens/settings/widgets/data_source_cache_settings.dart';
 import 'package:nai_launcher/presentation/screens/settings/widgets/settings_card.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+
+import '../../../../helpers/adaptive_panel_expectations.dart';
+import '../../../../helpers/fake_save_file_picker.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -89,19 +94,8 @@ void main() {
   testWidgets(
     'Android ONNX import does not hide extensions behind MIME filters',
     (tester) async {
-      FilePicker? originalFilePicker;
-      try {
-        originalFilePicker = FilePicker.platform;
-      } catch (_) {
-        originalFilePicker = null;
-      }
       final filePicker = _RecordingFilePicker();
-      FilePicker.platform = filePicker;
-      addTearDown(() {
-        if (originalFilePicker != null) {
-          FilePicker.platform = originalFilePicker;
-        }
-      });
+      useFakeFilePicker(filePicker);
       PlatformCapabilities.debugOverride = PlatformCapabilities.forPlatform(
         TargetPlatform.android,
       );
@@ -150,6 +144,154 @@ void main() {
     // 图片保存路径 / Vibe 库路径 / Hive 路径三处都只读，且用 iOS 而非 Android 文案。
     expect(find.textContaining('沙盒'), findsNWidgets(3));
     expect(find.textContaining('由系统安全管理'), findsNothing);
+  });
+
+  testWidgets('ONNX 导入进行中按钮显示忙碌且不能重复导入', (tester) async {
+    useFakeFilePicker(
+      _RecordingFilePicker(
+        result: FilePickerResult([
+          PlatformFile(
+            name: 'tagger.zip',
+            size: 1,
+            path: r'C:\picked\tagger.zip',
+          ),
+        ]),
+      ),
+    );
+    PlatformCapabilities.debugOverride = PlatformCapabilities.forPlatform(
+      TargetPlatform.android,
+    );
+    final onnx = _PendingOnnxModelService(storage);
+
+    await tester.pumpWidget(_buildSubject(storage, onnxService: onnx));
+    await tester.pump();
+
+    final importButton = find.byTooltip('导入 ONNX 模型、标签文件或 ZIP 压缩包');
+    IconButton button() => tester.widget<IconButton>(
+      find.ancestor(of: importButton, matching: find.byType(IconButton)).first,
+    );
+    await tester.tap(importButton);
+    await tester.pump();
+
+    expect(onnx.imports, 1);
+    expect(button().onPressed, isNull);
+    expect(
+      find.descendant(
+        of: importButton,
+        matching: find.byType(CircularProgressIndicator),
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(importButton, warnIfMissed: false);
+    await tester.pump();
+    expect(onnx.imports, 1);
+
+    onnx.finish(2);
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 5));
+
+    expect(button().onPressed, isNotNull);
+    expect(
+      find.descendant(
+        of: importButton,
+        matching: find.byType(CircularProgressIndicator),
+      ),
+      findsNothing,
+    );
+  });
+
+  group('本地 tagger 模型缓存', () {
+    setUp(() {
+      useFakeFilePicker(
+        _RecordingFilePicker(
+          result: FilePickerResult([
+            PlatformFile(
+              name: 'tagger.onnx',
+              size: 1,
+              path: r'C:\picked\tagger.onnx',
+            ),
+          ]),
+          directory: r'C:\models\comfyui_wd14',
+        ),
+      );
+    });
+
+    Future<_CountingOnnxModelService> pumpWithCachedModels(
+      WidgetTester tester,
+    ) async {
+      final onnx = _CountingOnnxModelService(storage);
+      await tester.pumpWidget(_buildSubject(storage, onnxService: onnx));
+      await tester.pump();
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(StorageSettingsSection)),
+      );
+      final subscription = container.listen(
+        localTaggerModelsProvider,
+        (_, _) {},
+      );
+      addTearDown(subscription.close);
+      await tester.pump();
+      expect(onnx.scans, 1);
+      return onnx;
+    }
+
+    testWidgets('桌面端换目录后重新扫描', (tester) async {
+      final onnx = await pumpWithCachedModels(tester);
+
+      await tester.tap(find.text('本地 ONNX tagger 模型'));
+      await tester.pump();
+      await tester.pump();
+
+      expect(onnx.taggerDirectory, r'C:\models\comfyui_wd14');
+      expect(onnx.scans, 2);
+    });
+
+    testWidgets('移动端导入与清除后重新扫描，重建不重复统计', (tester) async {
+      PlatformCapabilities.debugOverride = PlatformCapabilities.forPlatform(
+        TargetPlatform.android,
+      );
+      final onnx = await pumpWithCachedModels(tester);
+      expect(onnx.managedCounts, 1);
+
+      await tester.tap(find.byTooltip('导入 ONNX 模型、标签文件或 ZIP 压缩包'));
+      await tester.pump();
+      await tester.pump();
+      expect(onnx.imports, 1);
+      expect(onnx.scans, 2);
+      expect(onnx.managedCounts, 2);
+      await tester.pump(const Duration(seconds: 5));
+
+      await tester.tap(find.byTooltip('删除'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.tap(find.widgetWithText(FilledButton, '删除'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(onnx.clears, 1);
+      expect(onnx.scans, 3);
+      expect(onnx.managedCounts, 3);
+    });
+
+    testWidgets('清除中途失败仍按磁盘现状重扫并提示错误', (tester) async {
+      PlatformCapabilities.debugOverride = PlatformCapabilities.forPlatform(
+        TargetPlatform.android,
+      );
+      final onnx = await pumpWithCachedModels(tester);
+      onnx.clearError = const FileSystemException('locked', 'tagger.onnx');
+
+      await tester.tap(find.byTooltip('删除'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.tap(find.widgetWithText(FilledButton, '删除'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(onnx.clears, 1);
+      expect(onnx.scans, 2);
+      expect(onnx.managedCounts, 2);
+      expect(find.textContaining('清除本地 ONNX 模型失败'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
+    });
   });
 
   testWidgets('Android 同步到系统相册开关默认开启，关闭后写入设置', (tester) async {
@@ -250,6 +392,7 @@ void main() {
 
     final form = find.byKey(const ValueKey('adaptive-bottom-sheet'));
     expect(form, findsOneWidget);
+    expectPanelHeaderScrollsWithContent(tester);
     expect(find.byType(Dialog), findsNothing);
     final rect = tester.getRect(form);
     expect(rect.top, greaterThanOrEqualTo(24));
@@ -289,6 +432,7 @@ void main() {
 
 Widget _buildSubject(
   _MemoryLocalStorageService storage, {
+  LocalOnnxModelService? onnxService,
   double textScale = 1,
   CooccurrenceDataPackService? cooccurrenceService,
   EdgeInsets padding = EdgeInsets.zero,
@@ -298,7 +442,7 @@ Widget _buildSubject(
     overrides: [
       localStorageServiceProvider.overrideWith((ref) => storage),
       localOnnxModelServiceProvider.overrideWith(
-        (ref) => LocalOnnxModelService(storage),
+        (ref) => onnxService ?? LocalOnnxModelService(storage),
       ),
       cacheStatisticsProvider.overrideWith(
         (ref) async => CacheStatistics(
@@ -359,7 +503,29 @@ class _ReadyCooccurrenceService extends CooccurrenceDataPackService {
   }
 }
 
+class _PendingOnnxModelService extends LocalOnnxModelService {
+  _PendingOnnxModelService(super.storage);
+
+  final _pending = Completer<int>();
+  var imports = 0;
+
+  void finish(int count) => _pending.complete(count);
+
+  @override
+  Future<int> importTaggerSelections(List<LocalOnnxImportSource> sources) {
+    imports++;
+    return _pending.future;
+  }
+
+  @override
+  Future<int> managedFileCount() async => 0;
+}
+
 class _RecordingFilePicker extends FilePicker {
+  _RecordingFilePicker({this.result, this.directory});
+
+  final FilePickerResult? result;
+  final String? directory;
   FileType? type;
   List<String>? allowedExtensions;
   bool? allowMultiple;
@@ -382,7 +548,48 @@ class _RecordingFilePicker extends FilePicker {
     this.type = type;
     this.allowedExtensions = allowedExtensions;
     this.allowMultiple = allowMultiple;
-    return null;
+    return result;
+  }
+
+  @override
+  Future<String?> getDirectoryPath({
+    String? dialogTitle,
+    bool lockParentWindow = false,
+    String? initialDirectory,
+  }) async => directory;
+}
+
+class _CountingOnnxModelService extends LocalOnnxModelService {
+  _CountingOnnxModelService(super.storage);
+
+  var scans = 0;
+  var imports = 0;
+  var clears = 0;
+  var managedCounts = 0;
+  Object? clearError;
+
+  @override
+  Future<List<LocalOnnxModelDescriptor>> scanTaggerModels() async {
+    scans++;
+    return const [];
+  }
+
+  @override
+  Future<int> importTaggerSelections(List<LocalOnnxImportSource> sources) async {
+    imports++;
+    return sources.length;
+  }
+
+  @override
+  Future<void> clearManagedTaggerFiles() async {
+    clears++;
+    if (clearError case final error?) throw error;
+  }
+
+  @override
+  Future<int> managedFileCount() async {
+    managedCounts++;
+    return 0;
   }
 }
 
