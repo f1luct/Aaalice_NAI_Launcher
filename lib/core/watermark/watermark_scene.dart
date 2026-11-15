@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../data/models/watermark/watermark_settings.dart';
 import 'watermark_auto_placement.dart';
 import 'watermark_font_catalog.dart';
+import 'watermark_font_pack_service.dart';
 import 'watermark_source_analysis.dart';
 import 'watermark_tone.dart';
 
@@ -299,9 +300,8 @@ class WatermarkScene {
     text: TextSpan(
       text: style.text,
       style: TextStyle(
-        fontFamily: WatermarkFontCatalog.contains(style.fontFamily)
-            ? style.fontFamily
-            : WatermarkFontCatalog.options.first.family,
+        fontFamily: WatermarkFontRegistry.processInstance
+            .resolveRenderableFamily(style.fontFamily),
         fontFamilyFallback: WatermarkFontCatalog.fallbackFamilies,
         fontSize: fontSize,
         height: 1.05,

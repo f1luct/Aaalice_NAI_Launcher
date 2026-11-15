@@ -9,11 +9,13 @@ import 'package:image/image.dart' as img;
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/core/utils/image_share_sanitizer.dart';
+import 'package:nai_launcher/core/watermark/watermark_font_pack_service.dart';
 import 'package:nai_launcher/core/watermark/watermark_render_service.dart';
 import 'package:nai_launcher/data/models/watermark/watermark_settings.dart';
 import 'package:nai_launcher/data/services/metadata/unified_metadata_parser.dart';
 import 'package:nai_launcher/presentation/providers/copy_drag_watermark_provider.dart';
 import 'package:nai_launcher/presentation/providers/share_image_settings_provider.dart';
+import 'package:nai_launcher/presentation/providers/watermark_font_pack_provider.dart';
 import 'package:nai_launcher/presentation/providers/watermark_settings_provider.dart';
 
 void main() {
@@ -221,6 +223,66 @@ void main() {
       );
     },
   );
+
+  test(
+    'copy/drag watermark ensures font through provider and reports fallback',
+    () async {
+      final ensuredFamilies = <String>[];
+      final fallbackFamilies = <String>[];
+      final c = ProviderContainer(
+        overrides: [
+          localStorageServiceProvider.overrideWithValue(storage),
+          watermarkFontPackProvider.overrideWith(
+            () => _FakeWatermarkFontPackNotifier((family) async {
+              ensuredFamilies.add(family);
+              return false;
+            }),
+          ),
+          watermarkFontFallbackToastProvider.overrideWithValue(
+            fallbackFamilies.add,
+          ),
+        ],
+      );
+      addTearDown(c.dispose);
+
+      await c
+          .read(shareImageSettingsProvider.notifier)
+          .setWatermarkForCopyAndDrag(true);
+      await c
+          .read(watermarkSettingsProvider.notifier)
+          .saveDefaults(
+            const WatermarkSettings(
+              textStyle: WatermarkTextStyle(
+                text: 'SIGNATURE',
+                fontFamily: 'Ma Shan Zheng',
+              ),
+            ),
+          );
+
+      final result = await ImageShareSanitizer.prepareForCopyOrDragInBackground(
+        _sourcePng(),
+        fileName: 'source.png',
+        stripMetadata: false,
+        transform: c.read(copyDragWatermarkProvider),
+      );
+
+      expect(ensuredFamilies, ['Ma Shan Zheng']);
+      expect(fallbackFamilies, ['Ma Shan Zheng']);
+      expect(img.decodePng(result.bytes), isNotNull);
+    },
+  );
+}
+
+class _FakeWatermarkFontPackNotifier extends WatermarkFontPackNotifier {
+  _FakeWatermarkFontPackNotifier(this._ensure);
+
+  final Future<bool> Function(String family) _ensure;
+
+  @override
+  WatermarkFontPackState build() => const WatermarkFontPackState();
+
+  @override
+  Future<bool> ensureFontReady(String family) => _ensure(family);
 }
 
 Uint8List _sourcePng() {

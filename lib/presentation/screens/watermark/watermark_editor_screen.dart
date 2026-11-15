@@ -22,8 +22,10 @@ import '../../../core/watermark/watermark_tone.dart';
 import '../../../data/models/watermark/watermark_settings.dart';
 import '../../adaptive/adaptive_layout.dart';
 import '../../providers/share_image_settings_provider.dart';
+import '../../providers/watermark_font_pack_provider.dart';
 import '../../providers/watermark_settings_provider.dart';
 import '../../router/app_routes.dart';
+import '../../widgets/common/app_toast.dart';
 import '../derivatives/derivative_copy_save_run.dart';
 import '../derivatives/derivative_copy_saver.dart';
 import 'watermark_editor_controls.dart';
@@ -438,6 +440,10 @@ class _WatermarkEditorScreenState extends ConsumerState<WatermarkEditorScreen> {
       return;
     }
     final l10n = context.l10n;
+    final overlay = Overlay.maybeOf(context, rootOverlay: true);
+    final ensureFont = ref
+        .read(watermarkFontPackProvider.notifier)
+        .ensureFontReady;
     final run = DerivativeCopySaveRun(
       saver: ref.read(derivativeCopySaverProvider(DerivativeKind.watermark)),
       notices: DerivativeCopySaveNotices.capture(
@@ -460,8 +466,15 @@ class _WatermarkEditorScreenState extends ConsumerState<WatermarkEditorScreen> {
     );
     setState(() => _saveRun = run);
     final outcome = await run.save(
-      render: (cancellationToken) =>
-          widget.renderCopy(request, cancellationToken: cancellationToken),
+      render: (cancellationToken) => widget.renderCopy(
+        request,
+        ensureFont: ensureFont,
+        onFontFallback: (family) => AppToast.warningOnOverlay(
+          overlay,
+          l10n.watermark_fontFallbackNotice(family),
+        ),
+        cancellationToken: cancellationToken,
+      ),
       sourceBytes: request.sourceBytes,
       sourcePath: _sourcePath,
     );

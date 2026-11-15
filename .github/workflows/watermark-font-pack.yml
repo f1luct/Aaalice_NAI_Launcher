@@ -1,0 +1,149 @@
+name: Publish watermark font pack
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Verify locked fonts and manifest without creating a GitHub Release"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: "3.47.5"
+  PUB_HOSTED_URL: "https://pub.dev"
+  DATA_TAG: watermark-fonts-3b8d1289-v1
+
+jobs:
+  build-and-publish:
+    name: Build, verify, and publish immutable watermark fonts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Verify official Flutter dependency sources
+        shell: pwsh
+        run: ./scripts/verify_flutter_sources.ps1
+
+      - name: Resolve dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Stage and verify locked font pack
+        run: |
+          dart run tool/font_pack/build_watermark_font_pack.dart
+          mkdir -p tool/.tmp/watermark_font_pack_first
+          cp tool/.tmp/watermark_font_pack/*.ttf tool/.tmp/watermark_font_pack_first/
+          cp tool/.tmp/watermark_font_pack/manifest.json tool/.tmp/watermark_font_pack_first/
+
+      - name: Rebuild and prove byte-for-byte deterministic output
+        run: |
+          dart run tool/font_pack/build_watermark_font_pack.dart
+          for file in tool/.tmp/watermark_font_pack_first/*.ttf; do
+            name="$(basename "$file")"
+            cmp "$file" "tool/.tmp/watermark_font_pack/$name"
+          done
+          cmp tool/.tmp/watermark_font_pack_first/manifest.json tool/.tmp/watermark_font_pack/manifest.json
+          cmp assets/data/watermark_font_pack_manifest.json tool/.tmp/watermark_font_pack/manifest.json
+
+      - name: Verify release tag is the locked non-application tag
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lock = Get-Content -Raw -Encoding UTF8 tool/font_pack/watermark_font_pack_source_lock.json | ConvertFrom-Json
+          $clientManifest = Get-Content -Raw -Encoding UTF8 assets/data/watermark_font_pack_manifest.json | ConvertFrom-Json
+          if ($lock.release.tag -ne $env:DATA_TAG) {
+            throw "Workflow DATA_TAG does not match source lock: $($lock.release.tag)"
+          }
+          if ($clientManifest.release.tag -ne $env:DATA_TAG) {
+            throw "Workflow DATA_TAG does not match client manifest: $($clientManifest.release.tag)"
+          }
+          if ($env:DATA_TAG -match '^v') {
+            throw 'Font pack release tags must not use the application v* namespace.'
+          }
+          if (!$lock.release.prerelease -or $lock.release.makeLatest) {
+            throw 'Font pack releases must be prereleases and must not become latest.'
+          }
+          if (!$clientManifest.release.prerelease -or $clientManifest.release.makeLatest) {
+            throw 'Client manifest release flags must be prerelease=true and makeLatest=false.'
+          }
+
+      - name: Refuse to overwrite different immutable assets
+        id: existing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $existing = gh release view $env:DATA_TAG --json isPrerelease,assets 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            "exists=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $release = $existing | ConvertFrom-Json
+          if (!$release.isPrerelease) {
+            throw "Existing font pack release $env:DATA_TAG is not a prerelease."
+          }
+          $lock = Get-Content -Raw -Encoding UTF8 tool/font_pack/watermark_font_pack_source_lock.json | ConvertFrom-Json
+          $expected = @{
+            'manifest.json' = 'tool/.tmp/watermark_font_pack/manifest.json'
+          }
+          foreach ($font in $lock.fonts) {
+            $expected[$font.fileName] = "tool/.tmp/watermark_font_pack/$($font.fileName)"
+          }
+          New-Item -ItemType Directory -Force -Path tool/.tmp/existing-release | Out-Null
+          gh release download $env:DATA_TAG --dir tool/.tmp/existing-release
+          foreach ($entry in $expected.GetEnumerator()) {
+            $remotePath = Join-Path tool/.tmp/existing-release $entry.Key
+            if (!(Test-Path -LiteralPath $remotePath)) {
+              throw "Immutable release is missing $($entry.Key). Create a new data version/tag instead of modifying this one."
+            }
+            $remoteHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $remotePath).Hash
+            $localHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $entry.Value).Hash
+            if ($remoteHash -ne $localHash) {
+              throw "Immutable asset $($entry.Key) has a different hash. Create a new data version/tag."
+            }
+          }
+          "exists=true" >> $env:GITHUB_OUTPUT
+
+      - name: Publish prerelease font assets
+        if: inputs.dry_run != true && steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lock = Get-Content -Raw -Encoding UTF8 tool/font_pack/watermark_font_pack_source_lock.json | ConvertFrom-Json
+          $assets = @(
+            foreach ($font in $lock.fonts) {
+              "tool/.tmp/watermark_font_pack/$($font.fileName)"
+            }
+            'tool/.tmp/watermark_font_pack/manifest.json'
+          )
+          gh release create $env:DATA_TAG `
+            --target '${{ github.sha }}' `
+            --title 'Watermark font pack 3b8d1289 v1' `
+            --notes 'Optional on-demand watermark font pack (SIL OFL). Verified byte-for-byte against the locked manifest in assets/data/watermark_font_pack_manifest.json.' `
+            --prerelease `
+            --latest=false `
+            @assets
+
+      - name: Upload verification report
+        uses: actions/upload-artifact@v4
+        with:
+          name: watermark-font-pack-verification
+          path: tool/.tmp/watermark_font_pack/verification-report.json
+          if-no-files-found: error

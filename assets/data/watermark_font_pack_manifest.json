@@ -1,0 +1,53 @@
+{
+  "manifestVersion": 1,
+  "dataVersion": "3b8d1289-v1",
+  "release": {
+    "tag": "watermark-fonts-3b8d1289-v1",
+    "prerelease": true,
+    "makeLatest": false
+  },
+  "fonts": [
+    {
+      "family": "Ma Shan Zheng",
+      "fileName": "MaShanZheng-Regular.ttf",
+      "size": 5857936,
+      "sha256": "6d2546bb189c732a8ca29af9e22457b152387d158aa459e4ac2ce1e51788b7fb",
+      "url": "https://github.com/Aaalice233/Aaalice_NAI_Launcher/releases/download/watermark-fonts-3b8d1289-v1/MaShanZheng-Regular.ttf"
+    },
+    {
+      "family": "Zhi Mang Xing",
+      "fileName": "ZhiMangXing-Regular.ttf",
+      "size": 4063532,
+      "sha256": "644e0cae9b40f0b10ab729a01bd32032e3973bac22be3dccae01bf6ae7fde969",
+      "url": "https://github.com/Aaalice233/Aaalice_NAI_Launcher/releases/download/watermark-fonts-3b8d1289-v1/ZhiMangXing-Regular.ttf"
+    },
+    {
+      "family": "Long Cang",
+      "fileName": "LongCang-Regular.ttf",
+      "size": 5162508,
+      "sha256": "e5bf2c3f24ef2327c6f136d8f73e2f9dfdf44896fdbeb35a9515f44777bb91bc",
+      "url": "https://github.com/Aaalice233/Aaalice_NAI_Launcher/releases/download/watermark-fonts-3b8d1289-v1/LongCang-Regular.ttf"
+    },
+    {
+      "family": "Great Vibes",
+      "fileName": "GreatVibes-Regular.ttf",
+      "size": 457588,
+      "sha256": "8d509802186f1b51572531ecf313e8098f9a5bfdfaca93f0c9b34467f9982d15",
+      "url": "https://github.com/Aaalice233/Aaalice_NAI_Launcher/releases/download/watermark-fonts-3b8d1289-v1/GreatVibes-Regular.ttf"
+    },
+    {
+      "family": "Caveat",
+      "fileName": "Caveat-VariableFont_wght.ttf",
+      "size": 403648,
+      "sha256": "0bdb6b660482d31531b3945849fba5916b3ef8695da7024a9e6b9ee3c4157988",
+      "url": "https://github.com/Aaalice233/Aaalice_NAI_Launcher/releases/download/watermark-fonts-3b8d1289-v1/Caveat-VariableFont_wght.ttf"
+    },
+    {
+      "family": "Allura",
+      "fileName": "Allura-Regular.ttf",
+      "size": 246632,
+      "sha256": "9c142b2e515832c0dfc4ff8b8ea18f40314943bf937b72e2b23c4661bac14cc6",
+      "url": "https://github.com/Aaalice233/Aaalice_NAI_Launcher/releases/download/watermark-fonts-3b8d1289-v1/Allura-Regular.ttf"
+    }
+  ]
+}

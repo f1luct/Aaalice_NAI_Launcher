@@ -14871,6 +14871,22 @@ class AppLocalizationsJa extends AppLocalizations {
   String get watermark_font => 'フォント';
 
   @override
+  String get watermark_fontNotDownloaded => '未ダウンロード';
+
+  @override
+  String watermark_fontDownloading(int percent) {
+    return 'フォントをダウンロード中（$percent%）';
+  }
+
+  @override
+  String get watermark_fontDownloadFailed => 'フォントのダウンロードに失敗したため代替フォントを使用中';
+
+  @override
+  String watermark_fontFallbackNotice(String font) {
+    return 'フォント「$font」のダウンロードに失敗したため、標準フォントで描画しました。';
+  }
+
+  @override
   String get watermark_chooseLogo => 'ロゴを選択';
 
   @override

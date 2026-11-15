@@ -366,6 +366,8 @@ void main() {
         ),
         preserveMetadata: false,
       ),
+      ensureFont: (_) async => true,
+      onFontFallback: (_) {},
     );
 
     final output = img.decodePng(result.bytes)!;

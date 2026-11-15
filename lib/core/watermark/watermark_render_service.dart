@@ -7,7 +7,9 @@ import '../../data/models/watermark/watermark_settings.dart';
 import '../derivatives/derivative_metadata_transfer.dart';
 import '../derivatives/derivative_registry.dart';
 import '../derivatives/derivative_render.dart';
+import '../services/verified_resumable_downloader.dart';
 import '../utils/image_share_sanitizer.dart';
+import 'watermark_font_catalog.dart';
 import 'watermark_scene.dart';
 import 'watermark_source_analysis.dart';
 import 'watermark_tone.dart';
@@ -56,9 +58,15 @@ class WatermarkRenderResult implements DerivativeRenderedCopy {
   final bool metadataPreserved;
 }
 
+typedef WatermarkFontEnsurer = Future<bool> Function(String family);
+
+typedef WatermarkFontFallbackHandler = void Function(String family);
+
 typedef WatermarkRenderOperation =
     Future<WatermarkRenderResult> Function(
       WatermarkRenderRequest request, {
+      required WatermarkFontEnsurer ensureFont,
+      required WatermarkFontFallbackHandler onFontFallback,
       DerivativeRenderCancellationToken? cancellationToken,
     });
 
@@ -106,6 +114,8 @@ class WatermarkRenderService {
 
   static Future<WatermarkRenderResult> render(
     WatermarkRenderRequest request, {
+    required WatermarkFontEnsurer ensureFont,
+    required WatermarkFontFallbackHandler onFontFallback,
     DerivativeRenderCancellationToken? cancellationToken,
   }) async {
     final token = cancellationToken ?? DerivativeRenderCancellationToken();
@@ -175,9 +185,28 @@ class WatermarkRenderService {
           'The source image size is invalid.',
         );
       }
+
+      final effectiveSettings = await _resolveRenderSettings(
+        request.settings,
+        token: token,
+        ensureFont: ensureFont,
+        onFontFallback: onFontFallback,
+      );
+      token.throwIfCancelled();
+
+      final effectiveRequest = identical(effectiveSettings, request.settings)
+          ? request
+          : WatermarkRenderRequest(
+              sourceBytes: request.sourceBytes,
+              logoBytes: request.logoBytes,
+              settings: effectiveSettings,
+              preserveMetadata: request.preserveMetadata,
+              sourceFileName: request.sourceFileName,
+            );
+
       final canvasSize = ui.Size(width.toDouble(), height.toDouble());
       final decision = await _decideAutoAdjust(
-        request,
+        effectiveRequest,
         canvasSize: canvasSize,
         logo: logoImage,
       );
@@ -188,7 +217,7 @@ class WatermarkRenderService {
       WatermarkScene.paint(
         canvas: canvas,
         canvasSize: canvasSize,
-        settings: request.settings,
+        settings: effectiveSettings,
         logo: logoImage,
         decision: decision,
       );
@@ -262,6 +291,47 @@ class WatermarkRenderService {
       sourceDescriptor?.dispose();
       sourceBuffer?.dispose();
     }
+  }
+
+  static Future<WatermarkSettings> _resolveRenderSettings(
+    WatermarkSettings settings, {
+    required DerivativeRenderCancellationToken token,
+    required WatermarkFontEnsurer ensureFont,
+    required WatermarkFontFallbackHandler onFontFallback,
+  }) async {
+    final textStyle = settings.textStyle;
+    if (!textStyle.enabled || textStyle.text.trim().isEmpty) {
+      return settings;
+    }
+    final requestedFamily = textStyle.fontFamily;
+    if (!WatermarkFontCatalog.isDownloadable(requestedFamily)) {
+      return settings;
+    }
+
+    var ready = false;
+    try {
+      ready = await token.race(ensureFont(requestedFamily));
+    } on DerivativeRenderCancelledException {
+      rethrow;
+    } on VerifiedDownloadCancelledException {
+      token.throwIfCancelled();
+      ready = false;
+    } on Object {
+      token.throwIfCancelled();
+      ready = false;
+    }
+
+    token.throwIfCancelled();
+    if (ready) {
+      return settings;
+    }
+
+    onFontFallback(requestedFamily);
+    return settings.copyWith(
+      textStyle: textStyle.copyWith(
+        fontFamily: WatermarkFontCatalog.defaultFamily,
+      ),
+    );
   }
 
   static Future<WatermarkAutoDecision> _decideAutoAdjust(

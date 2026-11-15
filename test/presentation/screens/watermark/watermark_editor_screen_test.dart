@@ -627,8 +627,13 @@ void main() {
         sourcePath: 'source.png',
         defaultsOnly: false,
         decodePreview: (_, {requireStatic = false}) async => preview.clone(),
-        renderCopy: (request, {cancellationToken}) =>
-            render(request.sourceBytes),
+        renderCopy:
+            (
+              request, {
+              required ensureFont,
+              required onFontFallback,
+              cancellationToken,
+            }) => render(request.sourceBytes),
       ),
     );
   });

@@ -19,6 +19,9 @@ import '../../helpers/novelai_webp_layout_fixture.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  Future<bool> fakeEnsureFont(String _) async => true;
+  void ignoreFontFallback(String _) {}
+
   test(
     'renders text and transparent logo at the original pixel size',
     () async {
@@ -38,6 +41,8 @@ void main() {
           preserveMetadata: false,
           sourceFileName: 'sample.webp',
         ),
+        ensureFont: fakeEnsureFont,
+        onFontFallback: ignoreFontFallback,
       );
 
       expect(result.width, 160);
@@ -81,6 +86,8 @@ void main() {
           settings: const WatermarkSettings(),
           preserveMetadata: false,
         ),
+        ensureFont: fakeEnsureFont,
+        onFontFallback: ignoreFontFallback,
       );
       expect(UnifiedMetadataParser.extractPngTextData(stripped.bytes), isEmpty);
 
@@ -90,6 +97,8 @@ void main() {
           settings: const WatermarkSettings(),
           preserveMetadata: true,
         ),
+        ensureFont: fakeEnsureFont,
+        onFontFallback: ignoreFontFallback,
       );
       final metadata = UnifiedMetadataParser.extractPngTextData(
         preserved.bytes,
@@ -127,6 +136,8 @@ void main() {
           settings: const WatermarkSettings(),
           preserveMetadata: true,
         ),
+        ensureFont: fakeEnsureFont,
+        onFontFallback: ignoreFontFallback,
       );
 
       final text = UnifiedMetadataParser.extractPngTextData(result.bytes);
@@ -150,6 +161,8 @@ void main() {
         settings: const WatermarkSettings(),
         preserveMetadata: true,
       ),
+      ensureFont: fakeEnsureFont,
+      onFontFallback: ignoreFontFallback,
     );
     expect(UnifiedMetadataParser.extractPngTextData(result.bytes), isEmpty);
     expect(result.metadataPreserved, isFalse);
@@ -169,6 +182,8 @@ void main() {
           settings: const WatermarkSettings(),
           preserveMetadata: true,
         ),
+        ensureFont: fakeEnsureFont,
+        onFontFallback: ignoreFontFallback,
       ),
       throwsA(
         isA<WatermarkRenderException>().having(
@@ -189,6 +204,8 @@ void main() {
           settings: const WatermarkSettings(),
           preserveMetadata: false,
         ),
+        ensureFont: fakeEnsureFont,
+        onFontFallback: ignoreFontFallback,
         cancellationToken: token,
       ),
       throwsA(isA<DerivativeRenderCancelledException>()),
@@ -204,6 +221,8 @@ void main() {
         settings: const WatermarkSettings(),
         preserveMetadata: false,
       ),
+      ensureFont: fakeEnsureFont,
+      onFontFallback: ignoreFontFallback,
       cancellationToken: token,
     );
 
@@ -261,6 +280,8 @@ void main() {
         settings: const WatermarkSettings(),
         preserveMetadata: true,
       ),
+      ensureFont: fakeEnsureFont,
+      onFontFallback: ignoreFontFallback,
     );
 
     final output = img.decodePng(result.bytes)!;

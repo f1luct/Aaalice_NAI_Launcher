@@ -26440,6 +26440,30 @@ abstract class AppLocalizations {
   /// **'Font'**
   String get watermark_font;
 
+  /// No description provided for @watermark_fontNotDownloaded.
+  ///
+  /// In en, this message translates to:
+  /// **'Not downloaded'**
+  String get watermark_fontNotDownloaded;
+
+  /// No description provided for @watermark_fontDownloading.
+  ///
+  /// In en, this message translates to:
+  /// **'Downloading font ({percent}%)'**
+  String watermark_fontDownloading(int percent);
+
+  /// No description provided for @watermark_fontDownloadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Font download failed, using fallback font'**
+  String get watermark_fontDownloadFailed;
+
+  /// No description provided for @watermark_fontFallbackNotice.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to download font \"{font}\". Using default font instead.'**
+  String watermark_fontFallbackNotice(String font);
+
   /// No description provided for @watermark_chooseLogo.
   ///
   /// In en, this message translates to:

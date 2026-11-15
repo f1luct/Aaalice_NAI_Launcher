@@ -14595,6 +14595,22 @@ class AppLocalizationsZh extends AppLocalizations {
   String get watermark_font => '字体';
 
   @override
+  String get watermark_fontNotDownloaded => '未下载';
+
+  @override
+  String watermark_fontDownloading(int percent) {
+    return '正在下载字体（$percent%）';
+  }
+
+  @override
+  String get watermark_fontDownloadFailed => '字体下载失败，当前使用回退字体';
+
+  @override
+  String watermark_fontFallbackNotice(String font) {
+    return '字体“$font”下载失败，已改用默认字体渲染。';
+  }
+
+  @override
   String get watermark_chooseLogo => '选择 Logo';
 
   @override
@@ -30118,6 +30134,22 @@ class AppLocalizationsZhHant extends AppLocalizationsZh {
 
   @override
   String get watermark_font => '字型';
+
+  @override
+  String get watermark_fontNotDownloaded => '未下載';
+
+  @override
+  String watermark_fontDownloading(int percent) {
+    return '正在下載字型（$percent%）';
+  }
+
+  @override
+  String get watermark_fontDownloadFailed => '字型下載失敗，目前使用備用字型';
+
+  @override
+  String watermark_fontFallbackNotice(String font) {
+    return '字型「$font」下載失敗，已改用預設字型算繪。';
+  }
 
   @override
   String get watermark_chooseLogo => '選擇 Logo';

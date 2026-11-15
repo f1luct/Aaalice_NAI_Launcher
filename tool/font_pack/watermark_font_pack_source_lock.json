@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "toolVersion": 1,
+  "dataVersion": "3b8d1289-v1",
+  "sourceDirectory": "tool/font_pack/fonts",
+  "release": {
+    "repository": "Aaalice233/Aaalice_NAI_Launcher",
+    "tag": "watermark-fonts-3b8d1289-v1",
+    "prerelease": true,
+    "makeLatest": false
+  },
+  "fonts": [
+    {
+      "family": "Ma Shan Zheng",
+      "fileName": "MaShanZheng-Regular.ttf",
+      "licenseDirectory": "licenses/fonts/ma-shan-zheng",
+      "size": 5857936,
+      "sha256": "6d2546bb189c732a8ca29af9e22457b152387d158aa459e4ac2ce1e51788b7fb"
+    },
+    {
+      "family": "Zhi Mang Xing",
+      "fileName": "ZhiMangXing-Regular.ttf",
+      "licenseDirectory": "licenses/fonts/zhi-mang-xing",
+      "size": 4063532,
+      "sha256": "644e0cae9b40f0b10ab729a01bd32032e3973bac22be3dccae01bf6ae7fde969"
+    },
+    {
+      "family": "Long Cang",
+      "fileName": "LongCang-Regular.ttf",
+      "licenseDirectory": "licenses/fonts/long-cang",
+      "size": 5162508,
+      "sha256": "e5bf2c3f24ef2327c6f136d8f73e2f9dfdf44896fdbeb35a9515f44777bb91bc"
+    },
+    {
+      "family": "Great Vibes",
+      "fileName": "GreatVibes-Regular.ttf",
+      "licenseDirectory": "licenses/fonts/great-vibes",
+      "size": 457588,
+      "sha256": "8d509802186f1b51572531ecf313e8098f9a5bfdfaca93f0c9b34467f9982d15"
+    },
+    {
+      "family": "Caveat",
+      "fileName": "Caveat-VariableFont_wght.ttf",
+      "licenseDirectory": "licenses/fonts/caveat",
+      "size": 403648,
+      "sha256": "0bdb6b660482d31531b3945849fba5916b3ef8695da7024a9e6b9ee3c4157988"
+    },
+    {
+      "family": "Allura",
+      "fileName": "Allura-Regular.ttf",
+      "licenseDirectory": "licenses/fonts/allura",
+      "size": 246632,
+      "sha256": "9c142b2e515832c0dfc4ff8b8ea18f40314943bf937b72e2b23c4661bac14cc6"
+    }
+  ],
+  "output": {
+    "packSha256": "3b8d12892de8ad2e4180b643a8031b0912ee6095c80ff598f2520090bec2e758",
+    "totalBytes": 16191844,
+    "fontCount": 6
+  },
+  "buildScript": "tool/font_pack/build_watermark_font_pack.dart",
+  "notes": "Source TTF files stay under tool/font_pack/fonts (excluded from app bundles). Runtime assets bundle only assets/data/watermark_font_pack_manifest.json; individual TTF files are published as immutable prerelease assets."
+}

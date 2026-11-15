@@ -1,15 +1,22 @@
-import 'package:nai_launcher/presentation/widgets/common/horizontal_action_strip.dart';
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:nai_launcher/presentation/widgets/common/horizontal_action_strip.dart';
 
 import '../../../core/utils/localization_extension.dart';
 import '../../../core/watermark/watermark_font_catalog.dart';
+import '../../../core/watermark/watermark_font_pack_service.dart';
 import '../../../data/models/watermark/watermark_settings.dart';
 import '../../adaptive/adaptive_presenter.dart';
 import '../../adaptive/content_sized_adaptive_form.dart';
+import '../../providers/watermark_font_pack_provider.dart';
+import '../../widgets/common/app_toast.dart';
 import '../../widgets/common/labeled_slider_rows.dart';
 import '../../widgets/image_editor/widgets/color_picker.dart';
 
-class WatermarkEditorControls extends StatelessWidget {
+class WatermarkEditorControls extends StatefulWidget {
   const WatermarkEditorControls({
     super.key,
     required this.settings,
@@ -36,7 +43,128 @@ class WatermarkEditorControls extends StatelessWidget {
   final VoidCallback onChooseLogo;
 
   @override
+  State<WatermarkEditorControls> createState() =>
+      _WatermarkEditorControlsState();
+}
+
+class _WatermarkEditorControlsState extends State<WatermarkEditorControls> {
+  ProviderContainer? _container;
+  ProviderSubscription<WatermarkFontPackState>? _fontSubscription;
+  WatermarkFontPackState _fontPackState = const WatermarkFontPackState();
+  bool _initializedScope = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final nextContainer = _maybeContainerOf(context);
+    if (!identical(nextContainer, _container)) {
+      _fontSubscription?.close();
+      _fontSubscription = null;
+      _container = nextContainer;
+      _initializedScope = false;
+      if (nextContainer != null) {
+        _fontSubscription = nextContainer.listen<WatermarkFontPackState>(
+          watermarkFontPackProvider,
+          (previous, next) {
+            if (!mounted) return;
+            setState(() => _fontPackState = next);
+            if (previous != null &&
+                next.registeredRevision != previous.registeredRevision) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) _markSiblingPreviewNeedsPaint();
+              });
+            }
+          },
+          fireImmediately: true,
+        );
+      } else {
+        _fontPackState = const WatermarkFontPackState();
+      }
+    }
+
+    final container = _container;
+    if (container != null && !_initializedScope) {
+      _initializedScope = true;
+      final notifier = container.read(watermarkFontPackProvider.notifier);
+      unawaited(notifier.probeLocalCache());
+      final initialFamily = widget.settings.textStyle.fontFamily;
+      if (WatermarkFontCatalog.isDownloadable(initialFamily)) {
+        unawaited(
+          _ensureFontForSelection(initialFamily, notifyOnFailure: true),
+        );
+      }
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant WatermarkEditorControls oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final nextFamily = widget.settings.textStyle.fontFamily;
+    if (nextFamily != oldWidget.settings.textStyle.fontFamily &&
+        WatermarkFontCatalog.isDownloadable(nextFamily) &&
+        !_fontPackState.stateFor(nextFamily).isReady) {
+      unawaited(_ensureFontForSelection(nextFamily, notifyOnFailure: false));
+    }
+  }
+
+  @override
+  void dispose() {
+    _fontSubscription?.close();
+    super.dispose();
+  }
+
+  static ProviderContainer? _maybeContainerOf(BuildContext context) {
+    if (context.findAncestorWidgetOfExactType<UncontrolledProviderScope>() ==
+        null) {
+      return null;
+    }
+    return ProviderScope.containerOf(context, listen: false);
+  }
+
+  Future<void> _ensureFontForSelection(
+    String family, {
+    required bool notifyOnFailure,
+  }) async {
+    final container = _container;
+    if (container == null || !WatermarkFontCatalog.isDownloadable(family)) {
+      return;
+    }
+    final overlay = Overlay.maybeOf(context, rootOverlay: true);
+    final fallbackMessage = context.l10n.watermark_fontFallbackNotice(family);
+    final notifier = container.read(watermarkFontPackProvider.notifier);
+    try {
+      final ready = await notifier.ensureFontReady(family);
+      if (!ready && notifyOnFailure && mounted) {
+        AppToast.warningOnOverlay(overlay, fallbackMessage);
+      }
+    } on Object {
+      if (notifyOnFailure && mounted) {
+        AppToast.warningOnOverlay(overlay, fallbackMessage);
+      }
+    }
+  }
+
+  void _markSiblingPreviewNeedsPaint() {
+    RenderObject? ancestor = context.findRenderObject();
+    for (var depth = 0; depth < 6 && ancestor?.parent != null; depth++) {
+      ancestor = ancestor!.parent;
+    }
+    if (ancestor == null) return;
+    void visit(RenderObject object) {
+      if (object is RenderCustomPaint) {
+        object.markNeedsPaint();
+      }
+      object.visitChildren(visit);
+    }
+
+    ancestor.visitChildren(visit);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final settings = widget.settings;
+    final layout = widget.layout;
+    final selectedLayer = widget.selectedLayer;
     final text = settings.textStyle;
     final logo = settings.logoStyle;
     final selectedPlacement = selectedLayer == WatermarkEditableLayer.text
@@ -48,19 +176,19 @@ class WatermarkEditorControls extends StatelessWidget {
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(
-            preserveMetadata
+            widget.preserveMetadata
                 ? Icons.data_object_outlined
                 : Icons.remove_circle_outline,
           ),
           title: Text(
-            preserveMetadata
+            widget.preserveMetadata
                 ? context.l10n.watermark_metadataPreserved
                 : context.l10n.watermark_metadataRemoved,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
           trailing: const Icon(Icons.settings_outlined),
-          onTap: onOpenMetadataSettings,
+          onTap: widget.onOpenMetadataSettings,
         ),
         const SizedBox(height: 8),
         HorizontalActionStrip(
@@ -78,7 +206,8 @@ class WatermarkEditorControls extends StatelessWidget {
               ),
             ],
             selected: {selectedLayer},
-            onSelectionChanged: (value) => onSelectedLayerChanged(value.first),
+            onSelectionChanged: (value) =>
+                widget.onSelectedLayerChanged(value.first),
           ),
         ),
         const SizedBox(height: 12),
@@ -87,88 +216,38 @@ class WatermarkEditorControls extends StatelessWidget {
             contentPadding: EdgeInsets.zero,
             title: Text(context.l10n.watermark_enableLayer),
             value: text.enabled,
-            onChanged: (value) => onSettingsChanged(
+            onChanged: (value) => widget.onSettingsChanged(
               settings.copyWith(textStyle: text.copyWith(enabled: value)),
             ),
           ),
           _WatermarkTextField(
             value: text.text,
             label: context.l10n.watermark_text,
-            onChanged: (value) => onSettingsChanged(
+            onChanged: (value) => widget.onSettingsChanged(
               settings.copyWith(textStyle: text.copyWith(text: value)),
             ),
           ),
           const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
-            initialValue: WatermarkFontCatalog.contains(text.fontFamily)
-                ? text.fontFamily
-                : WatermarkFontCatalog.options.first.family,
-            isExpanded: true,
-            selectedItemBuilder: (context) => [
-              for (final option in WatermarkFontCatalog.options)
-                Align(
-                  alignment: AlignmentDirectional.centerStart,
-                  child: Text(
-                    option.family,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-            ],
+          _WatermarkFontPicker(
+            textStyle: text,
+            fontPackState: _fontPackState,
             decoration: _controlDecoration(
               context,
               context.l10n.watermark_font,
             ),
-            items: [
-              for (final option in WatermarkFontCatalog.options)
-                DropdownMenuItem(
-                  value: option.family,
-                  child: Semantics(
-                    label: '${context.l10n.watermark_font}: ${option.family}',
-                    child: ExcludeSemantics(
-                      child: Row(
-                        children: [
-                          SizedBox(
-                            width: 112,
-                            child: Text(
-                              option.family,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context).textTheme.labelMedium,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          SizedBox(
-                            width: 132,
-                            child: Text(
-                              text.text.trim().isEmpty
-                                  ? option.sample
-                                  : text.text,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontFamily: option.family,
-                                fontFamilyFallback:
-                                    WatermarkFontCatalog.fallbackFamilies,
-                                fontSize: 20,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+            onSelected: (family) {
+              widget.onSettingsChanged(
+                settings.copyWith(
+                  textStyle: text.copyWith(fontFamily: family),
                 ),
-            ],
-            onChanged: (value) {
-              if (value != null) {
-                onSettingsChanged(
-                  settings.copyWith(
-                    textStyle: text.copyWith(fontFamily: value),
-                  ),
-                );
-              }
+              );
+              unawaited(
+                _ensureFontForSelection(family, notifyOnFailure: true),
+              );
             },
+            onRetry: (family) => unawaited(
+              _ensureFontForSelection(family, notifyOnFailure: true),
+            ),
           ),
           const SizedBox(height: 12),
           ListTile(
@@ -184,7 +263,7 @@ class WatermarkEditorControls extends StatelessWidget {
                 : null,
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _pickColor(context, Color(text.colorArgb), (color) {
-              onSettingsChanged(
+              widget.onSettingsChanged(
                 settings.copyWith(
                   textStyle: text.copyWith(colorArgb: color.toARGB32()),
                 ),
@@ -195,10 +274,10 @@ class WatermarkEditorControls extends StatelessWidget {
             enabled: text.autoTone,
             contrast: text.toneContrast,
             hint: context.l10n.watermark_autoToneTextHint,
-            onEnabledChanged: (value) => onSettingsChanged(
+            onEnabledChanged: (value) => widget.onSettingsChanged(
               settings.copyWith(textStyle: text.copyWith(autoTone: value)),
             ),
-            onContrastChanged: (value) => onSettingsChanged(
+            onContrastChanged: (value) => widget.onSettingsChanged(
               settings.copyWith(textStyle: text.copyWith(toneContrast: value)),
             ),
           ),
@@ -232,7 +311,7 @@ class WatermarkEditorControls extends StatelessWidget {
                 ),
               ],
               selected: {text.alignment},
-              onSelectionChanged: (value) => onSettingsChanged(
+              onSelectionChanged: (value) => widget.onSettingsChanged(
                 settings.copyWith(
                   textStyle: text.copyWith(alignment: value.first),
                 ),
@@ -247,7 +326,7 @@ class WatermarkEditorControls extends StatelessWidget {
                 value: text.letterSpacingRatio,
                 min: -0.02,
                 max: 0.08,
-                onChanged: (value) => onSettingsChanged(
+                onChanged: (value) => widget.onSettingsChanged(
                   settings.copyWith(
                     textStyle: text.copyWith(letterSpacingRatio: value),
                   ),
@@ -258,7 +337,7 @@ class WatermarkEditorControls extends StatelessWidget {
                 value: text.strokeWidthRatio,
                 min: 0,
                 max: 0.012,
-                onChanged: (value) => onSettingsChanged(
+                onChanged: (value) => widget.onSettingsChanged(
                   settings.copyWith(
                     textStyle: text.copyWith(strokeWidthRatio: value),
                   ),
@@ -269,7 +348,7 @@ class WatermarkEditorControls extends StatelessWidget {
                 value: text.shadowBlurRatio,
                 min: 0,
                 max: 0.04,
-                onChanged: (value) => onSettingsChanged(
+                onChanged: (value) => widget.onSettingsChanged(
                   settings.copyWith(
                     textStyle: text.copyWith(shadowBlurRatio: value),
                   ),
@@ -281,7 +360,7 @@ class WatermarkEditorControls extends StatelessWidget {
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: Text(context.l10n.watermark_enableLayer),
-            subtitle: !logoAvailable && logo.enabled
+            subtitle: !widget.logoAvailable && logo.enabled
                 ? Text(
                     context.l10n.watermark_logoMissing,
                     style: TextStyle(
@@ -290,15 +369,15 @@ class WatermarkEditorControls extends StatelessWidget {
                   )
                 : null,
             value: logo.enabled,
-            onChanged: (value) => onSettingsChanged(
+            onChanged: (value) => widget.onSettingsChanged(
               settings.copyWith(logoStyle: logo.copyWith(enabled: value)),
             ),
           ),
           FilledButton.tonalIcon(
-            onPressed: onChooseLogo,
+            onPressed: widget.onChooseLogo,
             icon: const Icon(Icons.add_photo_alternate_outlined),
             label: Text(
-              logoAvailable
+              widget.logoAvailable
                   ? context.l10n.watermark_replaceLogo
                   : context.l10n.watermark_chooseLogo,
             ),
@@ -308,10 +387,10 @@ class WatermarkEditorControls extends StatelessWidget {
             enabled: logo.autoTone,
             contrast: logo.toneContrast,
             hint: context.l10n.watermark_autoToneLogoHint,
-            onEnabledChanged: (value) => onSettingsChanged(
+            onEnabledChanged: (value) => widget.onSettingsChanged(
               settings.copyWith(logoStyle: logo.copyWith(autoTone: value)),
             ),
-            onContrastChanged: (value) => onSettingsChanged(
+            onContrastChanged: (value) => widget.onSettingsChanged(
               settings.copyWith(logoStyle: logo.copyWith(toneContrast: value)),
             ),
           ),
@@ -326,7 +405,7 @@ class WatermarkEditorControls extends StatelessWidget {
                   : logo.opacity,
               min: 0.05,
               max: 1,
-              onChanged: (value) => onSettingsChanged(
+              onChanged: (value) => widget.onSettingsChanged(
                 selectedLayer == WatermarkEditableLayer.text
                     ? settings.copyWith(
                         textStyle: text.copyWith(opacity: value),
@@ -395,7 +474,7 @@ class WatermarkEditorControls extends StatelessWidget {
           subtitle: Text(context.l10n.watermark_autoPlacementHint),
           value: settings.autoPlacement,
           onChanged: (value) =>
-              onSettingsChanged(settings.copyWith(autoPlacement: value)),
+              widget.onSettingsChanged(settings.copyWith(autoPlacement: value)),
         ),
         const SizedBox(height: 4),
         DropdownButtonFormField<WatermarkLayerArrangement>(
@@ -420,7 +499,7 @@ class WatermarkEditorControls extends StatelessWidget {
           ],
           onChanged: (value) {
             if (value != null) {
-              onSettingsChanged(
+              widget.onSettingsChanged(
                 settings.copyWith(
                   composition: settings.composition.copyWith(
                     arrangement: value,
@@ -458,10 +537,10 @@ class WatermarkEditorControls extends StatelessWidget {
       );
 
   void _updatePlacement(WatermarkPlacement placement) {
-    onLayoutChanged(
-      selectedLayer == WatermarkEditableLayer.text
-          ? layout.copyWith(textPlacement: placement)
-          : layout.copyWith(logoPlacement: placement),
+    widget.onLayoutChanged(
+      widget.selectedLayer == WatermarkEditableLayer.text
+          ? widget.layout.copyWith(textPlacement: placement)
+          : widget.layout.copyWith(logoPlacement: placement),
     );
   }
 
@@ -508,6 +587,247 @@ class WatermarkEditorControls extends StatelessWidget {
           context.l10n.watermark_anchorBottomCenter,
         WatermarkAnchor.bottomRight => context.l10n.watermark_anchorBottomRight,
       };
+}
+
+class _WatermarkFontPicker extends StatelessWidget {
+  const _WatermarkFontPicker({
+    required this.textStyle,
+    required this.fontPackState,
+    required this.decoration,
+    required this.onSelected,
+    required this.onRetry,
+  });
+
+  final WatermarkTextStyle textStyle;
+  final WatermarkFontPackState fontPackState;
+  final InputDecoration decoration;
+  final ValueChanged<String> onSelected;
+  final ValueChanged<String> onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final selectedFamily = WatermarkFontCatalog.contains(textStyle.fontFamily)
+        ? textStyle.fontFamily
+        : WatermarkFontCatalog.defaultFamily;
+    final selectedItemState = fontPackState.stateFor(selectedFamily);
+    final theme = Theme.of(context);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        DropdownButtonFormField<String>(
+          key: ValueKey(selectedFamily),
+          initialValue: selectedFamily,
+          isExpanded: true,
+          selectedItemBuilder: (context) => [
+            for (final option in WatermarkFontCatalog.options)
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: Text(
+                  option.family,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+          ],
+          decoration: decoration,
+          items: [
+            for (final option in WatermarkFontCatalog.options)
+              DropdownMenuItem(
+                value: option.family,
+                child: _WatermarkFontMenuItem(
+                  option: option,
+                  customText: textStyle.text,
+                  itemState: fontPackState.stateFor(option.family),
+                ),
+              ),
+          ],
+          onChanged: (value) {
+            if (value != null) {
+              onSelected(value);
+            }
+          },
+        ),
+        if (selectedItemState.status == WatermarkFontStatus.downloading) ...[
+          const SizedBox(height: 8),
+          LinearProgressIndicator(
+            value: selectedItemState.progress.clamp(0.02, 1.0),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            context.l10n.watermark_fontDownloading(
+              (selectedItemState.progress * 100).round(),
+            ),
+            style: theme.textTheme.bodySmall,
+          ),
+        ] else if (selectedItemState.status == WatermarkFontStatus.failed) ...[
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Icon(
+                Icons.warning_amber_rounded,
+                size: 16,
+                color: theme.colorScheme.error,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  context.l10n.watermark_fontDownloadFailed,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.error,
+                  ),
+                ),
+              ),
+              TextButton(
+                onPressed: () => onRetry(selectedFamily),
+                child: Text(context.l10n.common_retry),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _WatermarkFontMenuItem extends StatelessWidget {
+  const _WatermarkFontMenuItem({
+    required this.option,
+    required this.customText,
+    required this.itemState,
+  });
+
+  final WatermarkFontOption option;
+  final String customText;
+  final WatermarkFontItemState itemState;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final statusSuffix = switch (itemState.status) {
+      WatermarkFontStatus.bundled ||
+      WatermarkFontStatus.downloaded ||
+      WatermarkFontStatus.ready => null,
+      WatermarkFontStatus.notDownloaded => l10n.watermark_fontNotDownloaded,
+      WatermarkFontStatus.downloading => l10n.watermark_fontDownloading(
+        (itemState.progress * 100).round(),
+      ),
+      WatermarkFontStatus.failed => l10n.watermark_fontDownloadFailed,
+    };
+    final semanticsLabel = statusSuffix == null
+        ? '${l10n.watermark_font}: ${option.family}'
+        : '${l10n.watermark_font}: ${option.family}, $statusSuffix';
+
+    final effectiveFamily = WatermarkFontRegistry.processInstance
+        .resolveRenderableFamily(option.family);
+
+    return Semantics(
+      label: semanticsLabel,
+      child: ExcludeSemantics(
+        child: Row(
+          children: [
+            Expanded(
+              flex: 3,
+              child: Text(
+                option.family,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelMedium,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 4,
+              child: Text(
+                customText.trim().isEmpty ? option.sample : customText,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontFamily: effectiveFamily,
+                  fontFamilyFallback: WatermarkFontCatalog.fallbackFamilies,
+                  fontSize: 18,
+                ),
+              ),
+            ),
+            if (!option.isBundled) ...[
+              const SizedBox(width: 8),
+              Flexible(
+                flex: 3,
+                child: Align(
+                  alignment: AlignmentDirectional.centerEnd,
+                  child: _buildTrailingStatus(context, theme, colorScheme),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTrailingStatus(
+    BuildContext context,
+    ThemeData theme,
+    ColorScheme colorScheme,
+  ) {
+    return switch (itemState.status) {
+      WatermarkFontStatus.bundled => const SizedBox.shrink(),
+      WatermarkFontStatus.notDownloaded => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.cloud_download_outlined,
+            size: 16,
+            color: colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              context.l10n.watermark_fontNotDownloaded,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ),
+      WatermarkFontStatus.downloading => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox.square(
+            dimension: 14,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              value: itemState.progress.clamp(0.05, 1.0),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              '${(itemState.progress * 100).round()}%',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall,
+            ),
+          ),
+        ],
+      ),
+      WatermarkFontStatus.downloaded || WatermarkFontStatus.ready => Icon(
+        Icons.check_circle_outline,
+        size: 16,
+        color: colorScheme.primary,
+      ),
+      WatermarkFontStatus.failed => Icon(
+        Icons.error_outline,
+        size: 16,
+        color: colorScheme.error,
+      ),
+    };
+  }
 }
 
 class _WatermarkColorForm extends StatefulWidget {

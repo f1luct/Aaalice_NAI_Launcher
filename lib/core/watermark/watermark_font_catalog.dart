@@ -3,21 +3,26 @@ class WatermarkFontOption {
     required this.family,
     required this.sample,
     required this.supportsCjk,
+    this.isBundled = false,
   });
 
   final String family;
   final String sample;
   final bool supportsCjk;
+  final bool isBundled;
 }
 
 class WatermarkFontCatalog {
   const WatermarkFontCatalog._();
 
+  static const defaultFamily = 'LXGW ZhenKai GB';
+
   static const options = <WatermarkFontOption>[
     WatermarkFontOption(
-      family: 'LXGW ZhenKai GB',
+      family: defaultFamily,
       sample: 'Aaalice 水印',
       supportsCjk: true,
+      isBundled: true,
     ),
     WatermarkFontOption(
       family: 'Ma Shan Zheng',
@@ -51,13 +56,13 @@ class WatermarkFontCatalog {
     ),
   ];
 
-  static const fallbackFamilies = <String>[
-    'LXGW ZhenKai GB',
-    'Ma Shan Zheng',
-    'Zhi Mang Xing',
-    'Long Cang',
-  ];
+  static const fallbackFamilies = <String>[defaultFamily];
 
   static bool contains(String family) =>
       options.any((option) => option.family == family);
+
+  static bool isBundled(String family) => family == defaultFamily;
+
+  static bool isDownloadable(String family) =>
+      options.any((option) => option.family == family && !option.isBundled);
 }
