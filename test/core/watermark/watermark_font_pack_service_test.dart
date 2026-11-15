@@ -20,6 +20,17 @@ import 'package:path/path.dart' as p;
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  late HttpOverrides? previousHttpOverrides;
+
+  setUp(() {
+    previousHttpOverrides = HttpOverrides.current;
+    HttpOverrides.global = null;
+  });
+
+  tearDown(() {
+    HttpOverrides.global = previousHttpOverrides;
+  });
+
   test('parses locked font pack manifest and rejects untrusted entries', () {
     final raw = File(watermarkFontPackManifestAsset).readAsStringSync();
     final manifest = WatermarkFontPackManifest.parse(raw);
